@@ -210,7 +210,7 @@ Plus a manual check, run by you: no Mac attached, the app launches, imports a RO
 ## Needs from you
 
 1. **On both devices, one time:** install StikDebug and LocalDevVPN, and create the pairing file. The pairing file needs the Mac once; I will write the exact steps in Phase D.
-2. **A signing identity** for the team in `CLAUDE.local.md`. There were still 0 when last checked, and Phase C's device runs need one.
+2. **Signing:** done. Apple Development identities are in the keychain (3 on 2026-11-26). `verify-device.sh` preflight checks that one belongs to the team in `CLAUDE.local.md`.
 3. **Keep both devices unlocked**, with auto-lock off, during device runs. Keep the Mac quiet during speed runs.
 4. **Phase C's manual no-Mac check** on both devices.
 
