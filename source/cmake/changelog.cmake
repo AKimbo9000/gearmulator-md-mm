@@ -1,3 +1,8 @@
+# The changelog generator runs a binary built for the target, which a cross-compiled iOS build cannot run.
+if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+	return()
+endif()
+
 set(TUS_CHANGELOG_SOURCE ${CMAKE_SOURCE_DIR}/doc/changelog.txt)
 set(TUS_CHANGELOG_OUT_DIR ${CMAKE_SOURCE_DIR}/doc/changelog_split)
 set(TUS_CHANGELOG_DEPENDS_FILE ${CMAKE_SOURCE_DIR}/doc/changelog_split/changelog_Osirus.txt)

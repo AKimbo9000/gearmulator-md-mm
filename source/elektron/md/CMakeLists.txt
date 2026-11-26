@@ -21,3 +21,7 @@ if(${CMAKE_PROJECT_NAME}_BUILD_JUCEPLUGIN)
 endif()
 
 include(optimization.cmake)
+
+if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+	add_subdirectory(mmBenchIOS)
+endif()

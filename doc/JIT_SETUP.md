@@ -72,3 +72,24 @@ A development profile from the paid team lasts a year; reinstalling from the Mac
 - StikDebug README and PAIRING.md, https://github.com/StikDebug/StikDebug
 - SideStore JIT and pairing-file docs, https://docs.sidestore.io/docs/advanced/jit and https://docs.sidestore.io/docs/advanced/pairing-file
 - LocalDevVPN, https://apps.apple.com/us/app/localdevvpn/id6755608044
+
+## MM Bench: Monomachine on the device, JIT or interpreter
+
+**MM Bench** (`com.aki.gearmulator.bench`) is installed on both devices. The MM OS 1.32b ROM is already in its Documents folder; the app bundle contains none.
+- It runs the same scenario as `trigPressFirmwareTest mm` on the Mac: cold boot, Trig 1 press, 2 s hold, release, 10 s tail, 37 s of emulated time in all.
+- It then shows the engine, the render hash and the real-time factor (rtf).
+
+**Running it with JIT (no Mac, no cable):**
+1. Turn on LocalDevVPN.
+2. Open **MM Bench**.
+3. Either tap **Ask StikDebug to enable JIT**, or in StikDebug use **Enable JIT** and choose **MM Bench**.
+4. When StikDebug has attached, MM Bench starts by itself and shows **Engine: JIT (StikDebug)**. The run takes roughly 15–25 s.
+5. Read the result:
+   - `PASS … MATCH (expected 6adf0ea75100b8c3)` means the device JIT reproduced the desktop JIT bit for bit.
+   - The `rtf` line is the speed: above 1.0 means faster than real time.
+
+**Running it on the interpreter:** open MM Bench without StikDebug and tap **Run on the interpreter**. It takes about 1–2 minutes (the interpreter runs at about 0.5x on these devices). The expected hash is `0863f46b643b5555`.
+
+**Each run also writes `Documents/mmbench.log`.** You can read it in the Files app (On My iPad/iPhone → MM Bench), or I can pull it with the device connected.
+
+Run it once per engine on each device and tell me the four result lines, or connect the devices and I'll read the logs.

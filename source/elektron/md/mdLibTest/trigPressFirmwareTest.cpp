@@ -146,7 +146,12 @@ namespace
 	};
 }
 
+// TRIGPRESS_NO_MAIN: the iOS benchmark app (mmBenchIOS) calls the same scenario as trigPressMain()
+#ifdef TRIGPRESS_NO_MAIN
+int trigPressMain(const int _argc, char** _argv)
+#else
 int main(const int _argc, char** _argv)
+#endif
 {
 	if(_argc < 2 || (std::string_view(_argv[1]) != "md" && std::string_view(_argv[1]) != "mm"))
 	{

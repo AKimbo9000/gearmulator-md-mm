@@ -522,3 +522,29 @@ You ran the probe, without the Mac, through StikDebug. Its logs (`Documents/jitp
 **Region size:** MM's two DSPs plus trampolines peak at 350 KB over the 37 s scenario. The 16 MiB region StikDebug granted the probe is about 45× that, so 16 MiB is the default.
 
 **Also:** CLAUDE.md's "No JIT on iOS" constraint is replaced by the dual-engine rule.
+
+### 2026-11-27: MM Bench for iOS, installed on both devices
+
+**What it is:** `source/elektron/md/mmBenchIOS` (`com.aki.gearmulator.bench`).
+- It links mdLib built with `DSP56K_RUNTIME_ENGINE=ON` and compiles in `trigPressFirmwareTest.cpp` as `trigPressMain()` (`TRIGPRESS_NO_MAIN`), so the scenario code is the same as on the Mac.
+- **With StikDebug attached** (`CS_DEBUGGED`): it prepares a 16 MiB region (probe-proven handshake), installs it as the `JitCodeRegion` and runs the JIT.
+- **Without it:** it offers the interpreter, or "Ask StikDebug to enable JIT", and starts the JIT run by itself if StikDebug attaches.
+- **On screen:** engine, hash against the expected value per engine (JIT `6adf0ea75100b8c3`, interpreter `0863f46b643b5555`), rtf and peak JIT code. Output also goes to `Documents/mmbench.log`.
+
+**iOS library build glue added:**
+- `3rdparty` stops after `libresample` for an iOS build without the plug-in.
+- The changelog generator is skipped on iOS.
+- `synthLib/hostAudioWorkgroup.cpp` uses the Core Audio HAL on macOS only.
+
+**Build:**
+```
+cmake -G Xcode -S . -B build/ios-bench -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_SYSROOT=iphoneos -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_OSX_DEPLOYMENT_TARGET=17.0 -DDSP56K_RUNTIME_ENGINE=ON -DBUILD_TESTING=OFF -Dgearmulator_BUILD_JUCEPLUGIN=OFF <other synths OFF> -DMMBENCH_TEAM=<team>
+```
+then `--target mmBenchIOS`.
+
+**Installed:**
+- **Signing:** built and development-signed (`get-task-allow` = true).
+- **On both devices:** installed; the MM ROM copied to `Documents/mm-os1.32b.bin` with `devicectl copy to`; launched and running.
+- **Bundle:** contains no 8 MiB file.
+
+**Not yet measured:** the on-device result (hash and rtf for each engine). It needs a run with StikDebug, steps in `doc/JIT_SETUP.md`.

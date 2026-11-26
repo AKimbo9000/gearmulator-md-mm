@@ -3,6 +3,15 @@
 #include "dsp56kBase/audioworkgroup.h"
 
 #ifdef __APPLE__
+#	include <TargetConditionals.h>
+#endif
+
+// The Core Audio HAL device list exists on macOS only; on iOS this is a no-op
+#if defined(__APPLE__) && TARGET_OS_OSX
+#	define SYNTHLIB_HAL_WORKGROUP 1
+#endif
+
+#if SYNTHLIB_HAL_WORKGROUP
 #	include <CoreAudio/CoreAudio.h>
 #	include <os/workgroup.h>
 
@@ -13,7 +22,7 @@ namespace synthLib
 {
 	void updateHostAudioWorkgroup()
 	{
-#ifdef __APPLE__
+#if SYNTHLIB_HAL_WORKGROUP
 		if(__builtin_available(macOS 11.0, *))
 		{
 			constexpr AudioObjectPropertyElement elementMain = 0;	// kAudioObjectPropertyElementMain, older SDKs call it ...Master

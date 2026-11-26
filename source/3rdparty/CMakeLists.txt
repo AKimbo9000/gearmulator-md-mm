@@ -1,5 +1,11 @@
 add_subdirectory(libresample)
 
+# An iOS build without the plug-in (the MM benchmark, mmBenchIOS) needs libresample only. Everything below serves
+# the plug-in UI (freetype, lua, RmlUi, lunasvg) or the desktop audio/MIDI hosts (portaudio, portmidi).
+if(IOS AND NOT ${CMAKE_PROJECT_NAME}_BUILD_JUCEPLUGIN)
+	return()
+endif()
+
 # disable freetype deps, not really needed
 set(FT_DISABLE_ZLIB TRUE)
 set(FT_DISABLE_BZIP2 TRUE)
