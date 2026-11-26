@@ -78,6 +78,18 @@ namespace
 			return display->safeAreaInsets.subtractedFrom(display->totalArea);
 		return {};
 	}
+
+	// On iOS the editor covers the whole window (full screen, no title bar). resized() fits the panel into the safe
+	// area and centres it, which leaves room for the Settings button beside or below it. A panel-sized editor was
+	// placed top-left by the standalone window and left the button no room but the panel's corner.
+	juce::Point<int> iosEditorSize(const juce::Component& _editor)
+	{
+		if (const auto* top = _editor.getTopLevelComponent(); top && top != &_editor && !top->getLocalBounds().isEmpty())
+			return {top->getWidth(), top->getHeight()};
+		if (const auto* display = juce::Desktop::getInstance().getDisplays().getPrimaryDisplay())
+			return {display->totalArea.getWidth(), display->totalArea.getHeight()};
+		return {};
+	}
 }
 #endif
 
@@ -121,27 +133,41 @@ void EditorWindow::resized()
 		// the safe area of the screen, in our coordinates: clear of the notch, Dynamic Island and home indicator
 		const auto safe = getLocalArea(nullptr, iosSafeArea()).getIntersection(getLocalBounds());
 		const auto area = safe.isEmpty() ? getLocalBounds() : safe;
-		const auto fit = std::min(static_cast<float>(area.getWidth()) / static_cast<float>(m_state.getWidth()),
-		                          static_cast<float>(area.getHeight()) / static_cast<float>(m_state.getHeight()));
-		m_skinScale = fit;
-		const auto fitW = static_cast<int>(static_cast<float>(m_state.getWidth()) * fit);
-		const auto fitH = static_cast<int>(static_cast<float>(m_state.getHeight()) * fit);
-		if (!m_state.resizeEditor(fitW, fitH))
-			return;
-		if (auto* root = m_state.getUiRoot())
-			root->setTopLeftPosition(area.getX() + (area.getWidth() - fitW) / 2, area.getY() + (area.getHeight() - fitH) / 2);
+
+		// The Settings button gets a strip of its own beside the panel or below it, whichever leaves the panel larger
+		// (beside on an iPhone in landscape, below otherwise), so it never covers a control.
+		constexpr int bw = 96, bh = 40, gap = 8;
+		const auto skinW = static_cast<float>(m_state.getWidth());
+		const auto skinH = static_cast<float>(m_state.getHeight());
+		const auto fitIn = [&](const int _w, const int _h)
+		{
+			return std::max(0.01f, std::min(static_cast<float>(_w) / skinW, static_cast<float>(_h) / skinH));
+		};
+		auto panelArea = area;
+		bool beside = false;
 		if (m_gearButton)
 		{
-			// never on top of the panel: beside it (landscape), else below it (portrait), else in the corner
-			const int bw = 96, bh = 40;
-			const int panelRight = area.getX() + (area.getWidth() + fitW) / 2;
-			const int panelBottom = area.getY() + (area.getHeight() + fitH) / 2;
-			if (area.getRight() - panelRight >= bw + 8)
-				m_gearButton->setBounds(panelRight + (area.getRight() - panelRight - bw) / 2, area.getY() + 8, bw, bh);
-			else if (area.getBottom() - panelBottom >= bh + 8)
-				m_gearButton->setBounds(area.getRight() - bw - 8, panelBottom + 8, bw, bh);
+			beside = fitIn(area.getWidth() - bw - 2 * gap, area.getHeight()) > fitIn(area.getWidth(), area.getHeight() - bh - 2 * gap);
+			if (beside)
+				panelArea.removeFromRight(bw + 2 * gap);
 			else
-				m_gearButton->setBounds(area.getRight() - bw - 4, area.getY() + 4, bw, bh);
+				panelArea.removeFromBottom(bh + 2 * gap);
+		}
+		const auto fit = fitIn(panelArea.getWidth(), panelArea.getHeight());
+		m_skinScale = fit;
+		const auto fitW = static_cast<int>(skinW * fit);
+		const auto fitH = static_cast<int>(skinH * fit);
+		if (!m_state.resizeEditor(fitW, fitH))
+			return;
+		const auto panel = juce::Rectangle<int>(fitW, fitH).withCentre(panelArea.getCentre());
+		if (auto* root = m_state.getUiRoot())
+			root->setTopLeftPosition(panel.getPosition());
+		if (m_gearButton)
+		{
+			if (beside)
+				m_gearButton->setBounds(panel.getRight() + gap, panel.getY(), bw, bh);
+			else
+				m_gearButton->setBounds(panel.getRight() - bw, panel.getBottom() + gap, bw, bh);
 			m_gearButton->toFront(false);
 		}
 	}
@@ -232,15 +258,9 @@ void EditorWindow::setGuiScale(const float _percent)
 	{
 		auto size = getSizeForSkinScale(m_skinScale);
 #if JUCE_IOS
-		// never ask for more room than the screen's safe area: an iOS view is clipped to it
-		const auto avail = getParentComponent() ? getParentComponent()->getLocalBounds() : iosSafeArea();
-		if (!avail.isEmpty() && size.x > 0 && size.y > 0)
-		{
-			const auto fit = std::min(static_cast<float>(avail.getWidth()) / static_cast<float>(size.x),
-			                          static_cast<float>(avail.getHeight()) / static_cast<float>(size.y));
-			if (fit < 1.0f)
-				size = {static_cast<int>(static_cast<float>(size.x) * fit), static_cast<int>(static_cast<float>(size.y) * fit)};
-		}
+		// the editor fills the window, resized() fits the panel inside it
+		if (const auto full = iosEditorSize(*this); full.x > 0 && full.y > 0)
+			size = full;
 #endif
 		setSize(size.x, size.y);
 	}
@@ -334,12 +354,16 @@ void EditorWindow::updateSizeConstrainer()
 		auto maxW = m_state.getWidth() * 4;
 		auto maxH = m_state.getHeight() * 4;
 #if JUCE_IOS
-		// a fixed aspect ratio with a 4x maximum grows the width past the screen edge; there is no window to drag
-		if (const auto safe = iosSafeArea(); !safe.isEmpty())
+		// the editor takes the window's shape (screen, rotation, iPad split view); the panel keeps its aspect ratio
+		// inside it (resized()). A fixed ratio here made the standalone window shrink the editor to the panel.
+		if (const auto full = iosEditorSize(*this); full.x > 0 && full.y > 0)
 		{
-			maxW = std::min(maxW, safe.getWidth());
-			maxH = std::min(maxH, safe.getHeight());
+			maxW = std::max(maxW, full.x);
+			maxH = std::max(maxH, full.y);
 		}
+		m_sizeConstrainer.setMaximumSize(maxW, maxH);
+		m_sizeConstrainer.setFixedAspectRatio(0.0);
+		return;
 #endif
 		m_sizeConstrainer.setMaximumSize(maxW, maxH);
 
@@ -377,6 +401,17 @@ void EditorWindow::onSkinSizeChanged()
 	}
 
 	// the skin changed its own size, to fold part of itself away for example, which keeps the scale
+#if JUCE_IOS
+	// the editor keeps filling the window; fit the new panel size into it
+	if (const auto full = iosEditorSize(*this); full.x > 0 && full.y > 0)
+	{
+		if (full.x == getWidth() && full.y == getHeight())
+			resized();
+		else
+			setSize(full.x, full.y);
+		return;
+	}
+#endif
 	const auto size = getSizeForSkinScale(m_skinScale);
 
 	setSize(size.x, size.y);
