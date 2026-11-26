@@ -701,14 +701,30 @@ Your screenshots, untethered, JIT through StikDebug. Full MM `trigPressFirmwareT
 2. **The first JIT block crashed.** It died with `EXC_BAD_ACCESS` code 0x32 (`KERN_CODESIGN_ERROR`) at region+0x680, on the IO thread.
    - **Cause:** the RX pages were allocated but never prepared.
    - **Fix:** touch every 16 KiB page through the debugger (read a byte, write it back). This stands in for StikDebug's native `prepare_memory_region`.
-3. **With the late attach** (round 2), the app's watcher made the request after launch. engine.log showed the request answered but no switch in one run. With the attach at load this path is not needed. It remains the path for StikDebug's Enable JIT on a running app, and still needs checking on a device.
+3. **With the late attach** (round 2), the app's watcher made the request after launch. In one such run (before engine.log existed) realtime.log showed the request answered but no switch. With the attach at load this path is not needed. It remains the path for StikDebug's Enable JIT on a running app, and still needs checking on a device.
 
 **Engine trace:** `Documents/engine.log` records the launch decision, the watcher's request, and the switch steps.
 
+**Late attach (JIT switch while running): verified on the iPad.** MM was launched normally on the interpreter, and LLDB attached to the running process 17 s later.
+
+engine.log:
+- `launch: Interpreter … debugged=0`
+- `watcher: debugger attached, requesting the region`
+- `watcher: region acquired, region=0x166520000`
+- `switch: on the message thread, processor found`
+- `switch: device recreated on the JIT`
+
+realtime.log:
+- `engine changed: JIT (StikDebug, switched in Settings)`;
+- the worker stopped (offload=0);
+- rtf 2.28 at 188 callbacks/s;
+- after Play, peak 0.68 and 1 underrun.
+
+This is the path for Settings › Relaunch with JIT and for StikDebug's Enable JIT on a running app.
+
 **Next**
 - **iPhone:** unlock it, then run `GEARMULATOR_MM_AUTOPLAY_SECONDS=12 tools/jitprobe/lldb_jit_run.sh 00008150-001621DC3C20401C DC6CC1DF-E0B7-5D6E-BE49-405EE9E19517 <out> 45`. iPhone Bench JIT was 2.45x.
-- **StikDebug on the device** (hand test): connect LocalDevVPN, then open MM from StikDebug, then check that engine.log reports JIT. If it crashes with code 0x32, StikDebug's prepare does not cover these pages.
-- **The watcher switch after a late attach:** check it on a device. In the run where the request was answered, engine.log showed no switch.
+- **StikDebug on the device** (hand test): connect LocalDevVPN, then open MM from StikDebug, or tap Relaunch with JIT. Then check that engine.log reports the JIT. If the app dies with code 0x32, StikDebug's prepare does not cover these pages.
 
 ### iOS MM app usability, round 2 (2026-11-27): the interpreter's collapse fixed, JIT after launch, panel menu
 
