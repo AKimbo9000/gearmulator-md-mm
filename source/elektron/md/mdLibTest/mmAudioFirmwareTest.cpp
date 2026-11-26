@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <iostream>
 #include <limits>
@@ -61,6 +62,16 @@ namespace
 		for(unsigned block = 0; block < blocks; ++block)
 		{
 			hardware.processAudio(outputs, 256, 0);
+			// MM_AUDIO_DUMP=<file>: append the rendered blocks (float32, channel 0 then 1 per block) for diffing engines
+			if(const char* dump = std::getenv("MM_AUDIO_DUMP"); dump && roughness)
+			{
+				if(FILE* f = std::fopen(dump, "ab"))
+				{
+					std::fwrite(samples[0].data(), sizeof(float), samples[0].size(), f);
+					std::fwrite(samples[1].data(), sizeof(float), samples[1].size(), f);
+					std::fclose(f);
+				}
+			}
 			for(size_t channel = 0; channel < samples.size(); ++channel)
 				for(const auto sample : samples[channel])
 				{

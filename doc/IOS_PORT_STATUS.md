@@ -195,3 +195,14 @@ The "before" runs shared the machine with two other jobs, so the gain is approxi
 **What this rules out:** `spinSkip` is state-exact by design: skipping k iterations equals running them. So skipping differently cannot cause the instructions-per-cycle drift. The drift comes from when the polled value changes, which is the cross-DSP and ColdFire timing. That timing differs because the JIT stops `execUntilCycles` (and the run-until-condition `exec()` loops in `mddsp.cpp`) at block boundaries, while the interpreter stops at instructions. The skip sizes k differ for the same reason: their limit is the run-stop cycle.
 
 **Next step:** PLAN.md 1b, the block-shaped interpreter. Run each JIT block's extent, from `JitBlock::getInfo` with the same `JitConfig`, and stop and service peripherals and interrupts only at those boundaries. Then the scheduler sees the same stop points as with the JIT. Start with the MM producer at P:0x195 around checkpoint 3: compare the `execUntilCycles` targets and stop cycles of both engines there.
+
+**MM sine tests: cause narrowed** (`MM_AUDIO_DUMP=<file> mmAudioFirmwareTest --sine` dumps the measured blocks):
+- **Correction to earlier entries.** The "54,972 HOTX-full lines under the interpreter, 0 under the JIT" comparison was an artifact: ctest prints output only for failing tests. Run directly, the JIT logs 21,939 and the interpreter 18,318. HOTX overwrites happen in both engines and are not the cause.
+- Same RMS in both engines (0.1180 JIT, 0.1177 interpreter), but roughness 1.9e-6 (JIT) against 2.5e-3 (interpreter).
+- Over the first 16,384 frames:
+  - JIT: a clean 261.6 Hz sine (half periods 84/85 frames) with no discontinuities.
+  - Interpreter: the same pitch, but **dropouts**, 19 jumps in clusters about 380–1700 frames apart. At frame ~1975 the level halves (0.202 → 0.103), stays at 0.0 for 13 frames, then resumes at a shifted phase.
+- So the mixer intermittently receives no producer frames: its ESSI link input underruns, and `blockingPop` returns silence when its ring is empty. This is the same cross-DSP timing difference as the counter drift, here audible.
+- `mmDigiproFirmwareTest` (interpreter, 1200 s limit, run alone): still running (log build/check-poll/ctest-digipro.log)
+
+**Next step, refined:** before the full block-shaped interpreter, instrument the MM link in an interpreter run. Count `blockingPop` empty reads and purges and `pushToInput` drops per reason (receiver disabled, window opened during catch-up, strobe epoch, overrun) around frame 1975 of the sine test, and compare with the JIT, which has none. The reason that fires names which scheduler or catch-up path the interpreter's instruction-granular stops break. Then make that path stop where the JIT would. PLAN.md 1b is the general form of that fix.
