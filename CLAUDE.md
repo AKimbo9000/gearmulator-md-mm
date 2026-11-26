@@ -38,7 +38,10 @@ Do not repeat experiments those docs list as disproved. Also see this repo's
 ## Workflow
 
 - Work on `ios-port`. Make small, logical commits on this branch without asking. Push only to
-  `origin` (AKimbo9000/gearmulator-md-mm). Never push to `upstream`.
+  `origin` (AKimbo9000/gearmulator-md-mm) and, for submodule work, to the `ios-port` branches of
+  the forks AKimbo9000/dsp56300-md-mm (`source/cpu/dsp56300`) and AKimbo9000/asmjit (its
+  `source/asmjit`). In each of those, `origin` is the fork and `upstream` the original. Never push
+  to any `upstream`.
 - Keep `doc/IOS_PORT_STATUS.md` current: what was tried, measured numbers, what's next. Update
   it before ending a turn.
 - Assume the session can stop at any moment (usage limits). Work in small steps: after each
@@ -55,7 +58,8 @@ Do not repeat experiments those docs list as disproved. Also see this repo's
 - `scripts/verify-device.sh` — device build, `xcrun devicectl device install app`, launch with
   `--selftest`, pull results with `xcrun devicectl device copy from`
 
-`source/elektron/md/mdLibTest` already has firmware tests (e.g. `trigPressFirmwareTest`):
+`source/elektron/md/mdLibTest` already has firmware tests (e.g. `encoderPressFirmwareTest`, and
+`trigPressFirmwareTest`, which this port added for the render-hash/counter comparison):
 build on them rather than writing new harnesses.
 
 Team ID, device UDID and ROM file names: see `CLAUDE.local.md`.
@@ -79,7 +83,9 @@ turn them off for faster builds. Plugin formats: `gearmulator_BUILD_JUCEPLUGIN`,
 Set in `source/cmake/base.cmake`:
 - **Windows**: MSVC Release uses `/O2 /GS- /fp:fast /Oy /GT /GL /Zi /Oi /Ot`
 - **Linux**: `-Ofast -fno-stack-protector`, LTO enabled (except GCC, due to compiler bugs)
-- **macOS**: universal binaries (x86_64 + arm64), minimum 10.12/10.13, `-Ofast -flto`
+- **macOS**: universal binaries (x86_64 + arm64), minimum 10.12/10.13, Release `-Ofast -fno-lto`
+  (ThinLTO is opt-in through `GEARMULATOR_MDMM_APPLE_THINLTO`; `GEARMULATOR_MDMM_APPLE_OPTIMIZE_DSP`
+  covers dsp56kEmu, see `doc/mdmm-apple-optimization.md`)
 - **ARM**: special handling for ARMv8.1a+ atomics on known boards (rk3588, rock-5b, rpi-2712)
 - C++17 required — the DSP emulator uses extensive compile-time metaprogramming
 

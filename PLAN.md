@@ -105,7 +105,10 @@ The old patches are not `git apply`'d. Each real fix is reimplemented, and its c
 - **ROMs.** Located by SHA-256 in `roms/` (names have spaces), overridable with `GEARMULATOR_MD_FIRMWARE_BIN` / `GEARMULATOR_MM_FIRMWARE_BIN`. Never printed, and never copied into a bundle.
 - **Fixed scenarios.**
   - MD: cold boot in a fresh temp state directory, then Trig 1 press, hold 2 s, release, render 10 s.
-  - MM: boot 8 s, then note 60 for 2 s, render 10 s.
+  - MM: the same: cold boot, then Trig 1 press, hold 2 s, release, render 10 s.
+  - Both run in `trigPressFirmwareTest` (fixed 256-frame `processAudio` blocks, 25 s boot). The
+    existing audio tests drive randomized host blocks through the resampler, so they can't give
+    an exact raw-word hash.
 - **Hashes and counters.**
   - Hash the **raw 24-bit DSP output words**, not floats, so the hash doesn't depend on platform or flags.
   - Record counters every 0.25 s emulated: UC cycles, and each DSP's instructions, cycles and PC.
@@ -122,8 +125,7 @@ The old patches are not `git apply`'d. Each real fix is reimplemented, and its c
    - Add the fork push targets.
 2. Run `gh repo fork joelanders/dsp56300-md-mm` and `gh repo fork dsp56300/asmjit` under AKimbo9000. Set the submodule URLs (`git submodule set-url`), create `ios-port` branches, and commit.
 3. Add the render and counters harness in **test code only**, so the JIT baseline is recorded before any emulator change:
-   - Add `--render <out> --counters <out>` to the existing `mdAudioFirmwareTest` and `mmAudioFirmwareTest`.
-   - Add `trigPressFirmwareTest`, modelled on `encoderPressFirmwareTest`.
+   - Add `trigPressFirmwareTest md|mm [--render <out>] [--counters <out>]`, modelled on `encoderPressFirmwareTest`. (Done this way rather than extending `mdAudioFirmwareTest`/`mmAudioFirmwareTest`, whose randomized resampled host blocks can't give an exact raw-word hash.)
    - Reuse `benchmarkDevice()` (`mdUwFirmwareTest.cpp:268`) and the waveform diff (`mdBlockLinkFirmwareTest.cpp:187`).
 4. Write `scripts/verify-interp.sh` (Ninja, Release, arm64-only, plugins off, other synths off):
    - Builds `build/mac-jit` and `build/mac-interp`, the latter with `-DDSP56K_FORCE_INTERPRETER=ON`.
@@ -180,7 +182,7 @@ VERIFY ctest.mdLib.jit N/N PASS   VERIFY ctest.mdLib.interp N/N PASS   (GEARMULA
 VERIFY jit.unchanged md,mm == doc/ios-baselines/jit-render.json PASS
 VERIFY md.render jit=<h> interp=<h> MATCH   VERIFY md.counters 120/120 checkpoints MATCH
 VERIFY mm.render jit=<h> interp=<h> MATCH   VERIFY mm.counters MATCH
-VERIFY md.trig1 peak=<p> >0 PASS            VERIFY mm.note60 peak=<p> >0 PASS
+VERIFY md.trig1 peak=<p> >0 PASS            VERIFY mm.trig1 peak=<p> >0 PASS
 VERIFY RESULT PASS
 ```
 
@@ -292,7 +294,7 @@ $ scripts/verify-interp.sh --timed=seq
 VERIFY serial.jit.unchanged == baseline PASS
 VERIFY ctest.mdLib.timed-seq.jit N/N PASS   (GEARMULATOR_REQUIRE_FIRMWARE_TESTS=1)
 VERIFY timed-seq.md.determinism run1==run2 PASS   timed-seq.mm … PASS
-VERIFY timed-seq.md.trig1 peak=<p> >0 PASS   timed-seq.mm.note60 peak=<p> >0 PASS
+VERIFY timed-seq.md.trig1 peak=<p> >0 PASS   timed-seq.mm.trig1 peak=<p> >0 PASS
 VERIFY RESULT PASS
 ```
 **Risks:**
