@@ -93,3 +93,26 @@ A development profile from the paid team lasts a year; reinstalling from the Mac
 **Each run also writes `Documents/mmbench.log`.** You can read it in the Files app (On My iPad/iPhone → MM Bench), or I can pull it with the device connected.
 
 Run it once per engine on each device and tell me the four result lines, or connect the devices and I'll read the logs.
+
+## Gearmulator MM with JIT from a Mac (cable, no StikDebug)
+
+For development and testing, the Mac can do StikDebug's job. Xcode's LLDB attaches through the device's debugserver and services the app's `brk #0xf00d` request the way `universal.js` does.
+
+```bash
+GEARMULATOR_MM_AUTOPLAY_SECONDS=12 tools/jitprobe/lldb_jit_run.sh <hardware udid> <coredevice uuid> <out dir> 45
+```
+
+- **Device ids:** both are in `CLAUDE.local.md`. LLDB names devices by the CoreDevice UUID; `devicectl` accepts the hardware UDID.
+- **Requirements:** the device unlocked (otherwise `RequestDenied`), and the LLDB from Xcode 27 (`device select` / `device process attach`).
+- **What the script does:** installs the app, launches it stopped (`devicectl … --start-stopped`), attaches LLDB, services the request (`lldb_jit_service.py`), detaches, and after the wait pulls `realtime.log` and `engine.log` into `<out dir>`.
+- **How the request is serviced:**
+  1. advance pc;
+  2. allocate the RX region with `_M<size>,rx`;
+  3. touch every 16 KiB page through the debugger;
+  4. write x0 with a gdb-remote `P` packet;
+  5. detach on x16 = 0.
+- **The page touch is required.** Without it, the first JIT block died with `EXC_BAD_ACCESS` code 0x32 (`KERN_CODESIGN_ERROR`) inside the region. It stands in for StikDebug's native `prepare_memory_region`, which `universal.js` calls but does not contain. It takes about 40 s for the 16 MiB region, and the app waits at the breakpoint meanwhile.
+- **Why `P` packets:** LLDB's own register writes fail while the app is still in its load-time initialisers.
+- **Result on the iPad Pro 13 (M4):** `engine=JIT … serviced after 1 attempt(s)`, rtf 2.26, 187.5 callbacks/s.
+
+**JIT after launch.** Gearmulator MM also switches to the JIT on its own when a debugger attaches after launch: StikDebug's Enable JIT on the running app, or Settings › Relaunch with JIT. `Documents/engine.log` records each step.

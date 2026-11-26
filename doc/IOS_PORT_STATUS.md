@@ -682,6 +682,34 @@ Your screenshots, untethered, JIT through StikDebug. Full MM `trigPressFirmwareT
 - **JUCE standalone menu:** Audio/MIDI Settings… (output device, sample rate, buffer size, MIDI inputs), Save current state…, Load a saved state…, Reset to default state.
 - **New for iOS:** engine badge and reason, Relaunch with JIT, interpreter warning, ROM import from Files with validation, a test tone, Bluetooth MIDI pairing.
 
+### iOS MM app usability, round 3 (2026-11-27): JIT run read from the iPad
+
+**Item (0): a JIT run, read from `Documents/realtime.log` on the plugged-in iPad Pro 13 (M4)**
+- **How it was started:** debugger-launched, with the Mac doing StikDebug's part. `tools/jitprobe/lldb_jit_run.sh` services the same `brk #0xf00d` protocol through LLDB and debugserver; see doc/JIT_SETUP.md. StikDebug itself did not attach when launched from the Mac (round 2).
+- **Engine chosen:** `engine=JIT (StikDebug) use_jit=1 debugged=1 region=0x10ac00000 alias=0x10bc00000 16MiB serviced after 1 attempt(s)`.
+  - **Why:** the debugger was attached at load, and the prepare request was serviced on the first attempt.
+- **Real-time factor:** 2.26, minimum 2.13, over 46 s.
+- **Audio callbacks:** 187-188/s. Expected: 48000 Hz / 256 frames = 187.5. So the emulation advances one block per callback.
+- **Threading:** offload=0, so the emulation runs on the audio thread.
+- **Output after Play:** `play pressed: meter restarted`, then peaks of 0.62-0.96.
+- **Underruns:** 3 in 46 s, 2 of them during startup. The tempo is correct, since the emulation is faster than real time.
+- **iPhone:** not run. It refuses launches while locked (`RequestDenied`).
+
+**Why earlier attempts fell back to the interpreter, and the fixes** (all in `lldb_jit_service.py`; the app needed no change beyond the round-2 watcher)
+1. **No answer reached the app.** LLDB's `register write` and SBValue writes fail while the app is in its load-time initialisers, so the app saw rx = 0 ("did not service the prepare request").
+   - **Fix:** write x0 and pc with gdb-remote `P` packets and read them back with `p`, as `universal.js` does.
+2. **The first JIT block crashed.** It died with `EXC_BAD_ACCESS` code 0x32 (`KERN_CODESIGN_ERROR`) at region+0x680, on the IO thread.
+   - **Cause:** the RX pages were allocated but never prepared.
+   - **Fix:** touch every 16 KiB page through the debugger (read a byte, write it back). This stands in for StikDebug's native `prepare_memory_region`.
+3. **With the late attach** (round 2), the app's watcher made the request after launch. engine.log showed the request answered but no switch in one run. With the attach at load this path is not needed. It remains the path for StikDebug's Enable JIT on a running app, and still needs checking on a device.
+
+**Engine trace:** `Documents/engine.log` records the launch decision, the watcher's request, and the switch steps.
+
+**Next**
+- **iPhone:** unlock it, then run `GEARMULATOR_MM_AUTOPLAY_SECONDS=12 tools/jitprobe/lldb_jit_run.sh 00008150-001621DC3C20401C DC6CC1DF-E0B7-5D6E-BE49-405EE9E19517 <out> 45`. iPhone Bench JIT was 2.45x.
+- **StikDebug on the device** (hand test): connect LocalDevVPN, then open MM from StikDebug, then check that engine.log reports JIT. If it crashes with code 0x32, StikDebug's prepare does not cover these pages.
+- **The watcher switch after a late attach:** check it on a device. In the run where the request was answered, engine.log showed no switch.
+
 ### iOS MM app usability, round 2 (2026-11-27): the interpreter's collapse fixed, JIT after launch, panel menu
 
 **The slow-tempo/audio bug is fixed: the emulation no longer runs on the real-time thread** (commit 1ddf036c)
