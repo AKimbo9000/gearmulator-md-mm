@@ -1,6 +1,7 @@
 [submodule "source/cpu/dsp56300"]
 	path = source/cpu/dsp56300
-	url = https://github.com/joelanders/dsp56300-md-mm.git
+	url = https://github.com/AKimbo9000/dsp56300-md-mm.git
+	branch = ios-port
 [submodule "source/3rdparty/JUCE"]
 	path = source/3rdparty/JUCE
 	url = https://github.com/joelanders/JUCE-md-mm.git
