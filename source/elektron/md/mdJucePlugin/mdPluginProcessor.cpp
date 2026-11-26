@@ -1294,6 +1294,23 @@ namespace mdJucePlugin
 		}
 
 		auto* const holder = juce::StandalonePluginHolder::getInstance();
+#if JUCE_IOS
+		// The synth does not need the input. With no input channels JUCE selects AVAudioSessionCategoryPlayback,
+		// which the silent switch does not mute and which routes to the speaker
+		if(holder)
+		{
+			static bool inputsClosed = false;
+			juce::AudioDeviceManager::AudioDeviceSetup setup;
+			holder->deviceManager.getAudioDeviceSetup(setup);
+			if(!inputsClosed && (setup.inputChannels.countNumberOfSetBits() > 0 || setup.useDefaultInputChannels))
+			{
+				setup.inputChannels.clear();
+				setup.useDefaultInputChannels = false;
+				holder->deviceManager.setAudioDeviceSetup(setup, true);
+				inputsClosed = true;
+			}
+		}
+#endif
 		auto* const audioDevice = holder
 			? holder->deviceManager.getCurrentAudioDevice() : nullptr;
 		uint64_t cycles = 0;

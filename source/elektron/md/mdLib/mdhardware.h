@@ -61,6 +61,9 @@ namespace md
 	// The mixer is the "main" DSP: it drives the audio output and its ESSI frame
 	// counter is the master clock the MCU is paced against.
 	// -------------------------------------------------------------------------
+	// number of Play button presses sent to any machine (read by the iOS real-time meter)
+	extern std::atomic<uint32_t> g_playPresses;
+
 	class Hardware
 	{
 	public:
@@ -452,6 +455,8 @@ namespace md
 		bool m_hostAudioInputLatencyInitialized = false;
 		bool     m_schedInLinkDelivery = false;	// reentrancy guard for cross-DSP catch-up
 		double   m_schedFramesTotal   = 0.0;	// machine-time target, accumulated codec frames
+		uint32_t m_autoPlayState = 0;
+		bool m_playDown = false;			// Play's bit in its panel row, for g_playPresses		// GEARMULATOR_MM_AUTOPLAY_SECONDS progress
 		uint64_t m_schedUcCyclesDone  = 0;		// UC cycles executed under the scheduler (processUC)
 		uint32_t m_ucQuietSteps       = 0;		// instructions left before external input is polled again (processUC)
 

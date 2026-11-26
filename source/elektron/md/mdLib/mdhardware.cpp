@@ -1108,8 +1108,20 @@ namespace md
 		m_mdLinkAwaitFresh = true;
 	}
 
+	std::atomic<uint32_t> g_playPresses{0};
+
 	bool Hardware::trySendPanelEvent(const uint8_t _cmd, const uint8_t _arg)
 	{
+		// a press of the Play button (its bit set in its row) restarts the iOS real-time meter's minimum
+		static const auto play = panelPacket(m_model, PanelControl::Play);
+		if(play && _cmd == play->row)
+		{
+			// rows are sent with every button held in them: count the press only, when Play's bit turns on
+			const bool down = (_arg & play->mask) != 0;
+			if(down && !m_playDown)
+				++g_playPresses;
+			m_playDown = down;
+		}
 		registerExternalInteraction();
 		return m_panelIn.tryPush(_cmd, _arg);
 	}
@@ -2073,6 +2085,18 @@ namespace md
 
 	void Hardware::advance(const uint32_t _machineFrames)
 	{
+		// GEARMULATOR_MM_AUTOPLAY_SECONDS=N (tests): press and release Play once, N seconds of emulated time after boot
+		static const uint64_t autoPlayFrame = []
+		{
+			const char* e = std::getenv("GEARMULATOR_MM_AUTOPLAY_SECONDS");
+			return e ? static_cast<uint64_t>(std::strtoul(e, nullptr, 10)) * g_samplerate : uint64_t(0);
+		}();
+		if(autoPlayFrame && m_autoPlayState < 2 && static_cast<uint64_t>(m_schedFramesTotal) >= autoPlayFrame + m_autoPlayState * (g_samplerate / 8))
+		{
+			if(const auto play = panelPacket(m_model, PanelControl::Play))
+				trySendPanelEvent(play->row, m_autoPlayState == 0 ? play->mask : 0);
+			++m_autoPlayState;
+		}
 		if(!m_plusDriveFormatWatchDecided)
 			advancePlusDriveFormatWatch();
 		serviceRamRecordingMode();

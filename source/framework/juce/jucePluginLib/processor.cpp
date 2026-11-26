@@ -4,6 +4,8 @@
 #include <chrono>
 #include <limits>
 #include <thread>
+#include <cstring>
+#include <algorithm>
 
 #include <juce_audio_formats/juce_audio_formats.h>
 
@@ -43,7 +45,9 @@ namespace synthLib
 #include <chrono>
 #include <cstdio>
 #include <thread>
-extern std::string g_tusEngineDescription;
+extern "C" const char* tusEngineDescription();
+std::string tusAudioSessionDescription();
+uint32_t (*g_tusTransportCounter)() = nullptr;
 namespace
 {
 	// iOS real-time meter (PLAN.md Phase C): processing time of every audio block against its duration. A block whose
@@ -51,7 +55,9 @@ namespace
 	// second to Documents/realtime.log; the audio thread only updates atomics.
 	struct IosRealtimeMeter
 	{
-		std::atomic<uint64_t> audioNs{0}, processNs{0}, blocks{0}, underruns{0};
+		std::atomic<uint64_t> audioNs{0}, processNs{0}, blocks{0}, underruns{0}, samples{0};
+		std::atomic<uint32_t> peakBits{0};		// max |sample| of the output since the last log line, as float bits
+		std::atomic<double> sampleRate{0};
 		std::atomic<bool> started{false};
 		void start()
 		{
@@ -63,21 +69,39 @@ namespace
 				FILE* f = std::fopen(path.c_str(), "w");
 				if(!f)
 					return;
-				std::fprintf(f, "engine=%s\n", g_tusEngineDescription.c_str());
-				uint64_t lastAudio = 0, lastProcess = 0, t = 0;
+				std::fprintf(f, "engine=%s\n", tusEngineDescription());
+				uint64_t lastAudio = 0, lastProcess = 0, lastBlocks = 0, lastSamples = 0, lastUnderruns = 0, t = 0;
+				uint32_t lastPlay = g_tusTransportCounter ? g_tusTransportCounter() : 0;
 				double minRtf = 1e9;
+				uint64_t underrunsSincePlay = 0;
 				for(;;)
 				{
 					std::this_thread::sleep_for(std::chrono::seconds(1));
 					++t;
-					const auto a = audioNs.load(), pr = processNs.load();
+					if(t == 1 || t == 5 || t == 30)
+						std::fprintf(f, "session t=%llu %s\n", (unsigned long long)t, tusAudioSessionDescription().c_str());
+					const uint32_t play = g_tusTransportCounter ? g_tusTransportCounter() : 0;
+					if(play != lastPlay)
+					{
+						lastPlay = play;
+						minRtf = 1e9;
+						underrunsSincePlay = 0;
+						std::fprintf(f, "play pressed: meter restarted\n");
+					}
+					const auto a = audioNs.load(), pr = processNs.load(), b = blocks.load(), sm = samples.load(), u = underruns.load();
 					const double rtf = pr > lastProcess ? double(a - lastAudio) / double(pr - lastProcess) : 0.0;
 					if(a > lastAudio && rtf < minRtf)
 						minRtf = rtf;
-					std::fprintf(f, "t=%llu window_rtf=%.3f min_rtf=%.3f blocks=%llu underruns=%llu\n", (unsigned long long)t, rtf,
-						minRtf < 1e8 ? minRtf : 0.0, (unsigned long long)blocks.load(), (unsigned long long)underruns.load());
+					underrunsSincePlay += u - lastUnderruns;
+					const uint32_t pb = peakBits.exchange(0);
+					float peak;
+					std::memcpy(&peak, &pb, sizeof(peak));
+					std::fprintf(f, "t=%llu window_rtf=%.3f min_rtf=%.3f callbacks_per_s=%llu avg_block=%.0f samplerate=%.0f peak=%.5f underruns=%llu underruns_since_play=%llu\n",
+						(unsigned long long)t, rtf, minRtf < 1e8 ? minRtf : 0.0, (unsigned long long)(b - lastBlocks),
+						b > lastBlocks ? double(sm - lastSamples) / double(b - lastBlocks) : 0.0, sampleRate.load(), peak,
+						(unsigned long long)u, (unsigned long long)underrunsSincePlay);
 					std::fflush(f);
-					lastAudio = a; lastProcess = pr;
+					lastAudio = a; lastProcess = pr; lastBlocks = b; lastSamples = sm; lastUnderruns = u;
 				}
 			}).detach();
 		}
@@ -86,17 +110,30 @@ namespace
 
 	struct IosMeterScope
 	{
-		IosMeterScope(const int _samples, const double _rate) : m_start(std::chrono::steady_clock::now()),
-			m_audioNs(_rate > 0 ? uint64_t(double(_samples) * 1e9 / _rate) : 0) { g_iosMeter.start(); }
+		IosMeterScope(juce::AudioBuffer<float>& _buffer, const double _rate) : m_buffer(_buffer), m_start(std::chrono::steady_clock::now()),
+			m_audioNs(_rate > 0 ? uint64_t(double(_buffer.getNumSamples()) * 1e9 / _rate) : 0)
+		{
+			g_iosMeter.start();
+			g_iosMeter.sampleRate = _rate;
+		}
 		~IosMeterScope()
 		{
 			const auto ns = uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - m_start).count());
 			g_iosMeter.audioNs += m_audioNs;
 			g_iosMeter.processNs += ns;
+			g_iosMeter.samples += uint64_t(m_buffer.getNumSamples());
 			++g_iosMeter.blocks;
 			if(m_audioNs && ns > m_audioNs)
 				++g_iosMeter.underruns;
+			float peak = 0.0f;
+			for(int c = 0; c < m_buffer.getNumChannels(); ++c)
+				peak = std::max(peak, m_buffer.getMagnitude(c, 0, m_buffer.getNumSamples()));
+			uint32_t bits;
+			std::memcpy(&bits, &peak, sizeof(bits));
+			uint32_t prev = g_iosMeter.peakBits.load();
+			while(bits > prev && !g_iosMeter.peakBits.compare_exchange_weak(prev, bits)) {}
 		}
+		juce::AudioBuffer<float>& m_buffer;
 		std::chrono::steady_clock::time_point m_start;
 		uint64_t m_audioNs;
 	};
@@ -1046,7 +1083,7 @@ namespace pluginLib
 	void Processor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midiMessages)
 	{
 #if JUCE_IOS
-		const IosMeterScope iosMeterScope(buffer.getNumSamples(), getSampleRate());
+		const IosMeterScope iosMeterScope(buffer, getSampleRate());
 #endif
 	    juce::ScopedNoDenormals noDenormals;
 
