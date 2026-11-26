@@ -628,3 +628,10 @@ Your screenshots, untethered, JIT through StikDebug. Full MM `trigPressFirmwareT
 - (d) Settings → MIDI: does a USB or Bluetooth MIDI keyboard show up?
 
 **Next step:** find the 7x in-app cost first. Profile the app's audio thread on the device with Instruments, or with a macOS Standalone build of the same plugin. Compare per-block emulator time with the bench, then fix it before items 2–6.
+
+**Correction, from the iPad's log** (read after the entry above was written):
+- **iPad, interpreter, launched from the Mac:** `t=84 window_rtf=0.612 min_rtf=0.057 blocks=6887 underruns=6741`. That is about 82 blocks/s; at 48 kHz that is about 585 frames, so the blocks are probably 512 frames plus scheduling.
+- **The latest window, 0.61x, matches MM Bench's interpreter figure on the iPad (0.59x).** Once booted, the app's audio callback costs about the same as the bare emulator. There is no 7x overhead.
+- **The low numbers** (iPhone 0.07 at t ≤ 42 s, iPad `min_rtf` 0.057) **come from the boot phase.**
+- **Consequence for the 60 s test:** `min_rtf` must be taken over the 60 s after Play is pressed, not since launch. The meter has to restart its minimum at that point; a reset on the first transport/Play is the next change. Until then, the per-second `window_rtf` lines in `realtime.log` give the minimum over any chosen interval.
+- **Expectation for the JIT run:** the bench measured JIT/interpreter ≈ 4.6x on both devices, so the app should reach about 2.4–2.8x on the JIT, well above the 1.2 target. Not measured yet; it needs the StikDebug launch.
