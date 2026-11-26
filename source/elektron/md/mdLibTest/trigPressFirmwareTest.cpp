@@ -227,6 +227,28 @@ int main(const int _argc, char** _argv)
 			<< " wall_s=" << wall
 			<< " rtf=" << (wall > 0.0 ? emulated / wall : 0.0)
 			<< '\n';
+		// DSP_SPIN_LOG=1: where each engine fast forwarded, and how far the interpreter's spin checks got
+		if(std::getenv("DSP_SPIN_LOG"))
+		{
+			for(auto* dsp : {&mixer, &producer})
+			{
+				const int idx = dsp == &mixer ? 0 : 1;
+				dsp56k::Disassembler disassembler(dsp->opcodes());
+				const auto& mem = dsp->memory();
+				for(const auto& [pc, e] : dsp->getFastForwardByPC())
+				{
+					std::string line;
+					disassembler.disassemble(line, mem.get(dsp56k::MemArea_P, pc), mem.get(dsp56k::MemArea_P, pc + 1), dsp->regs().sr.var, dsp->regs().omr.var, pc);
+					std::printf("FF dsp%d pc=%06x calls=%llu instr=%llu op=%06x opB=%06x  %s\n", idx, pc,
+						static_cast<unsigned long long>(e.first), static_cast<unsigned long long>(e.second),
+						mem.get(dsp56k::MemArea_P, pc), mem.get(dsp56k::MemArea_P, pc + 1), line.c_str());
+				}
+				for(const auto& [pc, e] : dsp->getSpinProbeByPC())
+					std::printf("PROBE dsp%d pc=%06x entered=%llu addr_ok=%llu bit_ok=%llu ff=%llu\n", idx, pc,
+						static_cast<unsigned long long>(e[0]), static_cast<unsigned long long>(e[1]),
+						static_cast<unsigned long long>(e[2]), static_cast<unsigned long long>(e[3]));
+			}
+		}
 		// TRIGPRESS_DISASM=1: disassemble the code around each DSP's final PC, to name the loop it idles in
 		if(std::getenv("TRIGPRESS_DISASM"))
 		{

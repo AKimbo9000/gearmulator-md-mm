@@ -615,7 +615,7 @@ namespace md
 							if(!m_mmSyncEdges.empty())
 								until = std::min(until, m_mmSyncEdges.front().first);
 							auto& dsp = m_dspProducer.dsp();
-							const bool loop = dsp.getPC().toWord() == 0x195
+							const bool loop = dspPollPC(dsp) == 0x195
 								&& dsp.memory().get(dsp56k::MemArea_P, 0x195) == 0x044fdd
 								&& dsp.memory().get(dsp56k::MemArea_P, 0x198) == 0x05a7dd;
 							spinSkip(m_spinMmPin, dsp, loop ? 0x195 : ~0u, m_mmSyncLevel, until > now ? until : 0);

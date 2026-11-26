@@ -61,7 +61,7 @@ namespace md
 		++_s.reads;
 		uint64_t cycles = _dsp.getCycles();
 		uint64_t instructions = _dsp.getInstructionCounter();
-		const dsp56k::TWord pc = _dsp.getPC().toWord();
+		const dsp56k::TWord pc = dspPollPC(_dsp);
 		const uint64_t dc = cycles - _s.cycles;
 		const uint64_t di = instructions - _s.instructions;
 
@@ -120,7 +120,7 @@ namespace md
 				return false;
 			auto& dsp = m_dspMixer.dsp();
 			_value = m_dspMixer.getPeriph().getDMA().getDSR(1);
-			const auto pc = dsp.getPC().toWord();
+			const auto pc = dspPollPC(dsp);
 			const auto& memory = dsp.memory();
 			if(pc == 0x87 && memory.get(dsp56k::MemArea_P, 0x87) == 0x084e2b && memory.get(dsp56k::MemArea_P, 0x91) == 0x050fd6)
 				spinSkip(m_spinMmBlockStart, dsp, 0x87, _value, ~uint64_t(0));
@@ -135,7 +135,7 @@ namespace md
 			auto& dsp = m_dspProducer.dsp();
 			_value = m_dspProducer.getPeriph().getDMA().getDDR(0);
 			const auto& memory = dsp.memory();
-			if(dsp.getPC().toWord() == 0x18d && memory.get(dsp56k::MemArea_P, 0x18d) == 0x084e2e && memory.get(dsp56k::MemArea_P, 0x191) == 0x0597dc)
+			if(dspPollPC(dsp) == 0x18d && memory.get(dsp56k::MemArea_P, 0x18d) == 0x084e2e && memory.get(dsp56k::MemArea_P, 0x191) == 0x0597dc)
 				spinSkip(m_spinMmProducerPhase, dsp, 0x18d, _value, ~uint64_t(0));
 			return true;
 		});

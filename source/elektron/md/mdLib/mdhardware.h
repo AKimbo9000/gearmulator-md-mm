@@ -28,6 +28,17 @@
 
 namespace md
 {
+
+	// The PC of the instruction that is accessing a peripheral, for the polling-loop detection (spinSkip). Inside a
+	// JIT block getPC() still holds the block start, which for the loops recognised here is the polling instruction
+	// itself; the interpreter has already advanced the PC past it, so it reports the current instruction instead.
+	inline dsp56k::TWord dspPollPC(const dsp56k::DSP& _dsp)
+	{
+		if constexpr(dsp56k::g_jitSupported)
+			return _dsp.getPC().toWord();
+		else
+			return _dsp.getCurrentInstructionPC();
+	}
 	// One scheduler slice can finish its current JIT block after crossing a cycle
 	// target. Keep a small, reported input look-ahead so those codec reads never
 	// need samples from a future host callback.

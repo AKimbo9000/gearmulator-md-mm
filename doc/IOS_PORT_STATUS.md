@@ -155,3 +155,43 @@ produced it.
    - an MD block-link `spinSkip` or `nopLoopSkip` path, which also calls `fastForward`.
 2. Once the mirror fires with the JIT's n, re-run `verify-interp.sh`. MM's counters and hash should then match, and probably the sine tests too.
 3. Give `mmDigiproFirmwareTest` a timeout that fits interpreter builds, or run the interpreter ctest with less parallelism.
+
+### 2026-11-26: the wait-loop skip in the interpreter (25-turn goal)
+
+**What the logging showed** (`DSP_SPIN_LOG=1 trigPressFirmwareTest mm --boot-seconds 3`):
+- The JIT's serial-status spin skip (`JitOps::serialStatusSpin`) **never fires on MM**: no `JITSPIN` lines at all. Last entry's diagnosis was wrong.
+- Every JIT fast forward comes from **mdLib's `spinSkip`**, at four polling `movep` reads:
+
+  | DSP | PC | instruction | JIT calls / skipped instructions in 3 s |
+  |---|---|---|---|
+  | mixer | 0x87 | `movep x:<<$ffffeb,a` | 151,350 / 2.63M |
+  | mixer | 0x17f | `movep x:<<$ffffeb,a` | 289,963 / 12.35M |
+  | producer | 0x18d | `movep x:<<$ffffee,a` | 264,052 / 12.23M |
+  | producer | 0x195 | `movep x:<<$ffffbd,b` (Port C) | 241,736 / 10.19M |
+
+**The two conditions the interpreter missed:**
+1. `spinSkip` acts only when `DSP::getRunStopCycle() != 0`, and only the JIT's `execUntilCycles` set it.
+2. It identifies the loop by `getPC()`. Inside a JIT block that is the block start, which here is the polling `movep`. The interpreter has already advanced the PC past it.
+
+**Fixed and committed:**
+- The interpreter's `execUntilCycles` sets and restores `m_runStopCycle` exactly as the JIT does (dsp56300).
+- mdLib uses a new `md::dspPollPC()` at all four PC checks: `getPC()` in JIT builds, the current instruction's PC in interpreter builds. JIT output therefore cannot change.
+- Verified: JIT MD/MM hashes and every counter checkpoint identical to `doc/ios-baselines`; `dsp56kTestRunner` exit 0 in both builds.
+- The interpreter now fast-forwards at the same four loops, with call counts within 1–5% of the JIT's. Over the full MM run (mixer / producer):
+  - JIT: 6.80M / 8.29M calls, 230M / 373M skipped instructions
+  - interpreter: 6.94M / 8.47M calls, 205M / 359M skipped instructions
+
+**Interpreter rtf, before → after** (Release, `trigPressFirmwareTest`, one run at a time):
+- MD: 0.67x → 0.71x
+- MM: 0.52x → 0.54x
+
+The "before" runs shared the machine with two other jobs, so the gain is approximate.
+
+**Closest state:**
+- MD: the hash still equals the JIT baseline `bdb35c9d2cdc6bb9`. Counters first diverge at checkpoint 5.
+- MM: the hash is now `0863f46b643b5555` against `6adf0ea75100b8c3`. First divergence at checkpoint 3: producer 8,258,955 instructions against the JIT's 8,264,310, cycles 6 apart.
+- Interpreter ctests: 18/20 of the targeted set pass. `mmSineFirmwareTest` and `mmSineMidiFirmwareTest` still fail their GND SIN smoothness/pitch check. `mmDigiproFirmwareTest` was still running at the time of writing (log `build/check-poll/ctest-digipro.log`).
+
+**What this rules out:** `spinSkip` is state-exact by design: skipping k iterations equals running them. So skipping differently cannot cause the instructions-per-cycle drift. The drift comes from when the polled value changes, which is the cross-DSP and ColdFire timing. That timing differs because the JIT stops `execUntilCycles` (and the run-until-condition `exec()` loops in `mddsp.cpp`) at block boundaries, while the interpreter stops at instructions. The skip sizes k differ for the same reason: their limit is the run-stop cycle.
+
+**Next step:** PLAN.md 1b, the block-shaped interpreter. Run each JIT block's extent, from `JitBlock::getInfo` with the same `JitConfig`, and stop and service peripherals and interrupts only at those boundaries. Then the scheduler sees the same stop points as with the JIT. Start with the MM producer at P:0x195 around checkpoint 3: compare the `execUntilCycles` targets and stop cycles of both engines there.
