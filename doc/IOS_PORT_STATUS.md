@@ -11,6 +11,8 @@ produced it.
 | Phase | State |
 |---|---|
 | 0 Commit, forks, harness, verify scripts | **done** |
+| A Runtime engine choice | **done** |
+| B JIT code region (StikDebug) | **done** (proven on macOS) |
 | 1 Port fixes; interpreter == JIT on macOS | in progress: 1a done, livelock fixed, MD audio matches, MM diverges |
 | 1.5 Minimal device build, serial interpreter RTF | not started |
 | 2 Interpreter RTF on this Mac | **done** (`verify-interp.sh --perf` PASS) |
@@ -488,3 +490,35 @@ You ran the probe, without the Mac, through StikDebug. Its logs (`Documents/jitp
 - The StikDebug TXM protocol works on both 27.x versions: prepare, a `vm_remap` RW alias, detach, then writing and executing code, and **re-writing it after detach**, which a JIT needs for recompilation.
 - `vm_region` reports the first entry of the returned range as 16 KiB, although 16 MiB was requested. TXM maps the range page by page. Phase B's allocator must treat the region as the size it asked for, and must not rely on `vm_region`'s size.
 - The JIT route is open. Next: Phase A, then Phase B.
+
+### 2026-11-27: Phase A (runtime engine) and Phase B (JIT code region) done
+
+**Phase A.**
+- **Build option:** `DSP56K_RUNTIME_ENGINE=ON` builds both engines, and `dsp56k::g_runtimeUseJIT` picks one per process.
+- **Code change:** `useJIT()` replaces the `g_useJIT` constant. In other builds it is still `constexpr`, so their code is unchanged.
+- **Trampolines** are generated only when the JIT runs.
+- **mdLib's polling-loop PC** (`dspPollPC`) follows the engine in use.
+- **Test hook:** `trigPressFirmwareTest --engine jit|interp`.
+
+**Phase B.**
+- `JitCodeRegion` is one process-wide region with an RX view and an RW alias, a first-fit allocator with coalescing, a mutex, and peak tracking.
+- `RegionJitRuntime` (JIT and trampolines) relocates code to RX, writes it through RW and flushes the icache. With no region installed it is plain `asmjit::JitRuntime`.
+- **macOS test region:** a single `MAP_JIT` mapping used as both views. Apple Silicon macOS executes JIT code only from `MAP_JIT`. The two-view case is the one the probe proved on both devices.
+- **Test hook:** `trigPressFirmwareTest --jit-region-mb N`.
+
+**Verified (macOS arm64; `build/check-ab`):**
+
+| build / mode | MD | MM |
+|---|---|---|
+| JIT build | `bdb35c9d…`, counters == baseline | `6adf0ea7…`, counters == baseline |
+| JIT build + 64 MiB region | == baseline (peak 231 KB) | == baseline (peak **350 KB**) |
+| runtime build `--engine jit` | == baseline | == baseline |
+| runtime build `--engine jit` + region | == baseline (231 KB) | == baseline (350 KB) |
+| runtime build `--engine interp` | == interpreter build (every checkpoint) | == interpreter build |
+| interpreter build | unchanged | unchanged |
+
+`dsp56kTestRunner` exits 0 in all three builds.
+
+**Region size:** MM's two DSPs plus trampolines peak at 350 KB over the 37 s scenario. The 16 MiB region StikDebug granted the probe is about 45× that, so 16 MiB is the default.
+
+**Also:** CLAUDE.md's "No JIT on iOS" constraint is replaced by the dual-engine rule.

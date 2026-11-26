@@ -35,7 +35,7 @@ namespace md
 	// itself; the interpreter has already advanced the PC past it, so it reports the current instruction instead.
 	inline dsp56k::TWord dspPollPC(const dsp56k::DSP& _dsp)
 	{
-		if constexpr(dsp56k::g_jitSupported)
+		if(dsp56k::useJIT())
 			return _dsp.getPC().toWord();
 		else
 			return _dsp.getCurrentInstructionPC();

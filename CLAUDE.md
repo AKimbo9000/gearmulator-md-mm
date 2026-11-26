@@ -26,8 +26,10 @@ Do not repeat experiments those docs list as disproved. Also see this repo's
 
 ## Hard constraints
 
-- **No JIT on iOS.** Device builds use `DSP56K_FORCE_INTERPRETER=1`. The desktop JIT build must
-  keep compiling and produce the same results as before.
+- **Dual engine on iOS.** Device builds use `DSP56K_RUNTIME_ENGINE=ON`: the JIT when StikDebug has
+  prepared an executable region (`dsp56k::JitCodeRegion`, see `doc/JIT_SETUP.md`), the interpreter
+  otherwise. The app must work on the interpreter alone. The desktop JIT build must keep compiling
+  and produce the same results as before (`doc/ios-baselines`).
 - **Accuracy over shortcuts.** The interpreter must reach the same emulated state as the JIT
   (instruction and cycle counts, audio). Never paper over timing with clamps, slack values or
   heuristics the JIT does not need.

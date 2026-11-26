@@ -22,6 +22,7 @@
 #include "mdLib/mdromloader.h"
 #include "baseLib/filesystem.h"
 #include "dsp56kEmu/disasm.h"
+#include "dsp56kEmu/jitcoderegion.h"
 
 #include <algorithm>
 #include <array>
@@ -156,6 +157,8 @@ int main(const int _argc, char** _argv)
 	const char* renderPath = nullptr;
 	const char* countersPath = nullptr;
 	uint32_t bootSeconds = 25, holdSeconds = 2, tailSeconds = 10, windows = 0, windowSeconds = 20;
+	const char* engineArg = nullptr;
+	uint32_t regionMb = 0;
 	for(int i = 2; i + 1 < _argc; i += 2)
 	{
 		const std::string_view arg(_argv[i]);
@@ -164,9 +167,29 @@ int main(const int _argc, char** _argv)
 		else if(arg == "--boot-seconds") bootSeconds = static_cast<uint32_t>(std::strtoul(_argv[i + 1], nullptr, 10));
 		else if(arg == "--hold-seconds") holdSeconds = static_cast<uint32_t>(std::strtoul(_argv[i + 1], nullptr, 10));
 		else if(arg == "--tail-seconds") tailSeconds = static_cast<uint32_t>(std::strtoul(_argv[i + 1], nullptr, 10));
+		else if(arg == "--engine") engineArg = _argv[i + 1];
+		else if(arg == "--jit-region-mb") regionMb = static_cast<uint32_t>(std::strtoul(_argv[i + 1], nullptr, 10));
 		else if(arg == "--windows") windows = static_cast<uint32_t>(std::strtoul(_argv[i + 1], nullptr, 10));
 		else if(arg == "--window-seconds") windowSeconds = static_cast<uint32_t>(std::strtoul(_argv[i + 1], nullptr, 10));
 		else { std::cerr << "unknown argument " << arg << '\n'; return 2; }
+	}
+
+	// --engine jit|interp selects the engine of a DSP56K_RUNTIME_ENGINE build; other builds have one engine only
+	if(engineArg)
+	{
+		const std::string_view e(engineArg);
+		if(e != "jit" && e != "interp") { std::cerr << "--engine must be jit or interp\n"; return 2; }
+#if DSP56K_RUNTIME_ENGINE
+		dsp56k::g_runtimeUseJIT = e == "jit";
+#else
+		if((e == "jit") != dsp56k::useJIT()) { std::cerr << "this build has only the " << (dsp56k::useJIT() ? "jit" : "interp") << " engine\n"; return 2; }
+#endif
+	}
+	// --jit-region-mb N: put all JIT code in one dual-mapped region of N MiB, as on iOS with StikDebug
+	if(regionMb && !dsp56k::JitCodeRegion::installDualMapped(static_cast<size_t>(regionMb) << 20))
+	{
+		std::cerr << "could not allocate a " << regionMb << " MiB dual-mapped JIT region\n";
+		return 1;
 	}
 
 	const char* path = std::getenv(model == md::MachineModel::Machinedrum
@@ -276,6 +299,12 @@ int main(const int _argc, char** _argv)
 			<< " dsp1_cycles=" << producer.getCycles()
 			<< " ff0=" << mixer.getFastForwardCalls() << "/" << mixer.getFastForwardInstructions()
 			<< " ff1=" << producer.getFastForwardCalls() << "/" << producer.getFastForwardInstructions()
+			<< " engine=" << (dsp56k::useJIT() ? "jit" : "interp")
+			<< " jit_region_mb=" << regionMb
+			<< " jit_region_peak_kb=" << (dsp56k::JitCodeRegion::peakUsed() / 1024)
+			<< " jit_region_failed=" << dsp56k::JitCodeRegion::failedAllocations()
+			<< " jit_region_installed=" << dsp56k::JitCodeRegion::installed()
+			<< " jit_region_used_kb=" << (dsp56k::JitCodeRegion::used() / 1024)
 			<< " best_window_rtf=" << bestWindowRtf
 			<< " wall_s=" << wall
 			<< " rtf=" << (wall > 0.0 ? emulated / wall : 0.0)
