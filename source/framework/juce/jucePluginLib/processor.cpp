@@ -37,6 +37,72 @@ namespace synthLib
 	class DeviceException;
 }
 
+
+#if JUCE_IOS
+#include <atomic>
+#include <chrono>
+#include <cstdio>
+#include <thread>
+extern std::string g_tusEngineDescription;
+namespace
+{
+	// iOS real-time meter (PLAN.md Phase C): processing time of every audio block against its duration. A block whose
+	// processing takes longer than its duration is counted as an underrun. A background thread logs one line per
+	// second to Documents/realtime.log; the audio thread only updates atomics.
+	struct IosRealtimeMeter
+	{
+		std::atomic<uint64_t> audioNs{0}, processNs{0}, blocks{0}, underruns{0};
+		std::atomic<bool> started{false};
+		void start()
+		{
+			if(started.exchange(true))
+				return;
+			std::thread([this]
+			{
+				const auto path = juce::File::getSpecialLocation(juce::File::userDocumentsDirectory).getChildFile("realtime.log").getFullPathName().toStdString();
+				FILE* f = std::fopen(path.c_str(), "w");
+				if(!f)
+					return;
+				std::fprintf(f, "engine=%s\n", g_tusEngineDescription.c_str());
+				uint64_t lastAudio = 0, lastProcess = 0, t = 0;
+				double minRtf = 1e9;
+				for(;;)
+				{
+					std::this_thread::sleep_for(std::chrono::seconds(1));
+					++t;
+					const auto a = audioNs.load(), pr = processNs.load();
+					const double rtf = pr > lastProcess ? double(a - lastAudio) / double(pr - lastProcess) : 0.0;
+					if(a > lastAudio && rtf < minRtf)
+						minRtf = rtf;
+					std::fprintf(f, "t=%llu window_rtf=%.3f min_rtf=%.3f blocks=%llu underruns=%llu\n", (unsigned long long)t, rtf,
+						minRtf < 1e8 ? minRtf : 0.0, (unsigned long long)blocks.load(), (unsigned long long)underruns.load());
+					std::fflush(f);
+					lastAudio = a; lastProcess = pr;
+				}
+			}).detach();
+		}
+	};
+	IosRealtimeMeter g_iosMeter;
+
+	struct IosMeterScope
+	{
+		IosMeterScope(const int _samples, const double _rate) : m_start(std::chrono::steady_clock::now()),
+			m_audioNs(_rate > 0 ? uint64_t(double(_samples) * 1e9 / _rate) : 0) { g_iosMeter.start(); }
+		~IosMeterScope()
+		{
+			const auto ns = uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - m_start).count());
+			g_iosMeter.audioNs += m_audioNs;
+			g_iosMeter.processNs += ns;
+			++g_iosMeter.blocks;
+			if(m_audioNs && ns > m_audioNs)
+				++g_iosMeter.underruns;
+		}
+		std::chrono::steady_clock::time_point m_start;
+		uint64_t m_audioNs;
+	};
+}
+#endif
+
 namespace pluginLib
 {
 	constexpr char g_saveMagic[] = "DSP56300";
@@ -979,6 +1045,9 @@ namespace pluginLib
 
 	void Processor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midiMessages)
 	{
+#if JUCE_IOS
+		const IosMeterScope iosMeterScope(buffer.getNumSamples(), getSampleRate());
+#endif
 	    juce::ScopedNoDenormals noDenormals;
 
 		// The buffer can have fewer channels than the buses: a standalone that cannot match the bus layout of a product

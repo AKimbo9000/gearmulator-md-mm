@@ -587,3 +587,44 @@ Your screenshots, untethered, JIT through StikDebug. Full MM `trigPressFirmwareT
 **Small issue:** MM Bench's result label wraps the rtf as "x , JIT code …". Cosmetic; it gets fixed with the next rebuild.
 
 **Next:** Phase C, the standalone Monomachine app: the runtime-engine build, Files ROM import, the engine badge, and the scene lifecycle that iOS 27 requires. A sustained 60 s rtf run on both devices belongs in its `--selftest`.
+
+### 2026-11-26 (night): Phase C, the standalone Monomachine app. Stopped at the 30-turn limit; the 60 s JIT run is not done
+
+**Done and committed:**
+- **iOS build of the JUCE standalone `mmJucePlugin`** (`com.aki.gearmulator.mm`):
+  - runtime-engine DSP core;
+  - RmlUi editor rendered in software;
+  - the iOS parts of charlesvestal `1c03315c`, ported where they no longer applied;
+  - portaudio/portmidi and the changelog generator skipped on iOS;
+  - JUCE's host tool built with a macOS-valid deployment target, the app at iOS 15.0 (Xcode 27's minimum).
+- **iOS 27 scene lifecycle:** JUCE 7 lacks it, and iOS 27 traps the app at launch (the same trap as the first probe). `mdJucePlugin/iosSceneShim.mm` plus a merged scene manifest fix it without touching JUCE. The app launches on the iPad and stays up.
+- **Engine selection at load** (`iosEngine.mm`, probe-proven handshake, 16 MiB region): JIT when StikDebug launched the app, the interpreter otherwise. The choice is written to the first line of `Documents/realtime.log`.
+- **Real-time meter (iOS) around `Processor::processBlock`:** per-block processing time against the block's duration. An underrun is processing longer than the block. Once a second it logs `window_rtf`, `min_rtf`, `blocks` and `underruns` to `Documents/realtime.log`, from a background thread.
+- **Installed on both devices.** The MM ROM was copied with devicectl to `Documents/Gearmulator Preview/Monomachine/roms/` (the processor's ROM folder); the bundle contains no ROM. The Info.plist exposes Documents to the Files app (`UIFileSharingEnabled`, `LSSupportsOpeningDocumentsInPlace`). `UIBackgroundModes` includes `audio` (JUCE default).
+
+**First measurement: a problem to solve before the 60 s test can pass.**
+- **Interpreter, launched from the Mac:** the iPhone's `realtime.log` reads `engine=Interpreter`, then `t=42 window_rtf=0.074 min_rtf=0.069 blocks=982 underruns=837`.
+- **Gap:** the headless MM Bench ran the same interpreter at **0.53x** on the iPhone. So in the app each second of audio costs about 7x more than the bare emulator.
+- **Blocks:** 982 in 42 s, so about 2,048-sample blocks at 48 kHz.
+- **Suspects, in order:**
+  1. The MM boot phase was still running at t ≤ 42 s.
+  2. The plugin's resampling or audio-input path (44.1 kHz emulator → 48 kHz).
+  3. Main-thread RmlUi software rendering competing for the same cores.
+  4. Real-time thread policy.
+- **iPad log:** engine=Interpreter | t=84 window_rtf=0.612 min_rtf=0.057 blocks=6887 underruns=6741
+
+**Not done yet:**
+1. **The 60 s JIT run while playing a pattern.** It needs you: launch Gearmulator MM through StikDebug, press Play, wait 60 s; I then read `realtime.log`. It cannot pass (min rtf ≥ 1.2, 0 underruns) until the gap above is understood: the JIT is about 4.6x faster than the interpreter, which at the measured in-app interpreter speed means about 0.35x.
+2. **Engine badge, "Relaunch with JIT" button and interpreter warning in the UI.** The engine is logged only.
+3. **ROM import UI** with size and fingerprint validation. For now the ROM goes into the ROM folder through the Files app or devicectl; `md::RomLoader` checks the fingerprint at load.
+4. **State across relaunch and backgrounding**, and background audio. The JUCE defaults are in place but untested.
+5. **CoreMIDI in and out:** JUCE standalone settings, untested.
+6. **Touch layout in landscape on iPhone and iPad:** not checked; the iOS editor fixes (fit, rotate, long press) are not ported yet.
+
+**Test by hand now:**
+- (a) On both devices, does Gearmulator MM show the Monomachine panel, and do touches work?
+- (b) Through StikDebug → Enable JIT → Gearmulator MM, press Play on a pattern for 60 s, then plug the device in so I can read `Documents/realtime.log`.
+- (c) Does audio continue when you switch apps?
+- (d) Settings → MIDI: does a USB or Bluetooth MIDI keyboard show up?
+
+**Next step:** find the 7x in-app cost first. Profile the app's audio thread on the device with Instruments, or with a macOS Standalone build of the same plugin. Compare per-block emulator time with the bench, then fix it before items 2–6.
