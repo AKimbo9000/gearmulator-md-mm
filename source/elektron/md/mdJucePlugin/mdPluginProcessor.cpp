@@ -23,6 +23,8 @@
 #include "juce_audio_utils/juce_audio_utils.h"
 #include "juce_audio_plugin_client/Standalone/juce_StandaloneFilterWindow.h"
 
+#include "iosSettingsSheet.h"
+
 #include <memory>
 #include <utility>
 
@@ -747,6 +749,9 @@ namespace mdJucePlugin
 		, m_rescueFolder(_ephemeralConfig ? std::move(_rescueFolder)
 			: std::optional<std::string>(getDataFolder() + "rescued-projects"))
 	{
+#if JUCE_IOS
+		installIosSettingsSheet();
+#endif
 		// A profile build keeps its own data folder, but finds firmware in the normal build's roms folder too.
 		if(*GEARMULATOR_STANDALONE_PROFILE)
 		{

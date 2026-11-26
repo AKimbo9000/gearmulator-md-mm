@@ -48,6 +48,10 @@ namespace synthLib
 extern "C" const char* tusEngineDescription();
 std::string tusAudioSessionDescription();
 uint32_t (*g_tusTransportCounter)() = nullptr;
+// the last one-second readings of the meter below, for the iOS settings sheet
+void tusRealtimeLast(double& _rtf, double& _callbacksPerSecond, double& _peak);
+// mixes a quiet 440 Hz tone into the output for _seconds (Settings > Audio > Test tone)
+void tusPlayTestTone(double _seconds);
 namespace
 {
 	// iOS real-time meter (PLAN.md Phase C): processing time of every audio block against its duration. A block whose
@@ -59,6 +63,9 @@ namespace
 		std::atomic<uint32_t> peakBits{0};		// max |sample| of the output since the last log line, as float bits
 		std::atomic<double> sampleRate{0};
 		std::atomic<bool> started{false};
+		std::atomic<double> lastRtf{0}, lastCallbacks{0}, lastPeak{0};
+		std::atomic<double> toneSeconds{0};
+		double tonePhase = 0;		// audio thread only
 		void start()
 		{
 			if(started.exchange(true))
@@ -69,7 +76,8 @@ namespace
 				FILE* f = std::fopen(path.c_str(), "w");
 				if(!f)
 					return;
-				std::fprintf(f, "engine=%s\n", tusEngineDescription());
+				const char* engine = tusEngineDescription();
+				std::fprintf(f, "engine=%s\n", engine);
 				uint64_t lastAudio = 0, lastProcess = 0, lastBlocks = 0, lastSamples = 0, lastUnderruns = 0, t = 0;
 				uint32_t lastPlay = g_tusTransportCounter ? g_tusTransportCounter() : 0;
 				double minRtf = 1e9;
@@ -80,6 +88,11 @@ namespace
 					++t;
 					if(t == 1 || t == 5 || t == 30)
 						std::fprintf(f, "session t=%llu %s\n", (unsigned long long)t, tusAudioSessionDescription().c_str());
+					if(const char* e = tusEngineDescription(); e != engine)
+					{
+						engine = e;
+						std::fprintf(f, "engine changed: %s\n", engine);
+					}
 					const uint32_t play = g_tusTransportCounter ? g_tusTransportCounter() : 0;
 					if(play != lastPlay)
 					{
@@ -101,6 +114,9 @@ namespace
 						b > lastBlocks ? double(sm - lastSamples) / double(b - lastBlocks) : 0.0, sampleRate.load(), peak,
 						(unsigned long long)u, (unsigned long long)underrunsSincePlay);
 					std::fflush(f);
+					lastRtf = rtf;
+					lastCallbacks = double(b - lastBlocks);
+					lastPeak = peak;
 					lastAudio = a; lastProcess = pr; lastBlocks = b; lastSamples = sm; lastUnderruns = u;
 				}
 			}).detach();
@@ -125,6 +141,7 @@ namespace
 			++g_iosMeter.blocks;
 			if(m_audioNs && ns > m_audioNs)
 				++g_iosMeter.underruns;
+			addTestTone();
 			float peak = 0.0f;
 			for(int c = 0; c < m_buffer.getNumChannels(); ++c)
 				peak = std::max(peak, m_buffer.getMagnitude(c, 0, m_buffer.getNumSamples()));
@@ -133,10 +150,40 @@ namespace
 			uint32_t prev = g_iosMeter.peakBits.load();
 			while(bits > prev && !g_iosMeter.peakBits.compare_exchange_weak(prev, bits)) {}
 		}
+		// after the timing: the tone is not part of the emulation's cost, but its level shows in the peak
+		void addTestTone()
+		{
+			const double left = g_iosMeter.toneSeconds.load();
+			const double rate = g_iosMeter.sampleRate.load();
+			if(left <= 0 || rate <= 0)
+				return;
+			const int n = m_buffer.getNumSamples();
+			const double step = 2.0 * juce::MathConstants<double>::pi * 440.0 / rate;
+			for(int i = 0; i < n; ++i)
+			{
+				const auto v = static_cast<float>(0.25 * std::sin(g_iosMeter.tonePhase));
+				g_iosMeter.tonePhase = std::fmod(g_iosMeter.tonePhase + step, 2.0 * juce::MathConstants<double>::pi);
+				for(int c = 0; c < m_buffer.getNumChannels(); ++c)
+					m_buffer.addSample(c, i, v);
+			}
+			g_iosMeter.toneSeconds = std::max(0.0, left - double(n) / rate);
+		}
 		juce::AudioBuffer<float>& m_buffer;
 		std::chrono::steady_clock::time_point m_start;
 		uint64_t m_audioNs;
 	};
+}
+
+void tusRealtimeLast(double& _rtf, double& _callbacksPerSecond, double& _peak)
+{
+	_rtf = g_iosMeter.lastRtf.load();
+	_callbacksPerSecond = g_iosMeter.lastCallbacks.load();
+	_peak = g_iosMeter.lastPeak.load();
+}
+
+void tusPlayTestTone(const double _seconds)
+{
+	g_iosMeter.toneSeconds = _seconds;
 }
 #endif
 

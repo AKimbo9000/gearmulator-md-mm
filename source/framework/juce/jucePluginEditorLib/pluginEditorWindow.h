@@ -14,6 +14,12 @@ namespace jucePluginEditorLib
 	class PluginEditorState;
 
 	//==============================================================================
+#if JUCE_IOS
+	// Set by the instrument (mdJucePlugin/iosSettingsSheet.cpp): opens its full-screen settings over _window, the
+	// editor window. _openEditorSettings opens the editor's own settings pages. Unset, the Settings button opens those.
+	extern std::function<void(juce::Component& _window, std::function<void()> _openEditorSettings)> g_iosOpenSettingsSheet;
+#endif
+
 	class EditorWindow : public juce::AudioProcessorEditor, juce::Timer
 	{
 	public:

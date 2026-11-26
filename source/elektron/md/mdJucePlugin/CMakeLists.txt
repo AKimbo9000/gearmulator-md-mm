@@ -31,6 +31,7 @@ set(SOURCES
 	mdProductSkinPolicy.h
 	mdProductSkins.h
 	mdPluginProcessor.cpp mdPluginProcessor.h
+	iosSettingsSheet.cpp iosSettingsSheet.h
 	mdStandalonePlusDrivePersistence.cpp mdStandalonePlusDrivePersistence.h
 	mdStorageImage.cpp mdStorageImage.h
 	mdPluginEntry.cpp

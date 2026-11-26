@@ -180,7 +180,7 @@ endmacro()
 # iOS: scene lifecycle (required by iOS 27, see elektron/md/mdJucePlugin/iosSceneShim.mm) and Files app access to
 # Documents, where firmware images are imported
 if(IOS)
-	set(TUS_IOS_PLIST_ARGS PLIST_TO_MERGE "<plist><dict><key>UIApplicationSceneManifest</key><dict><key>UIApplicationSupportsMultipleScenes</key><false/><key>UISceneConfigurations</key><dict><key>UIWindowSceneSessionRoleApplication</key><array><dict><key>UISceneConfigurationName</key><string>Default</string><key>UISceneDelegateClassName</key><string>TusSceneDelegate</string></dict></array></dict></dict><key>UIFileSharingEnabled</key><true/><key>LSSupportsOpeningDocumentsInPlace</key><true/></dict></plist>")
+	set(TUS_IOS_PLIST_ARGS PLIST_TO_MERGE "<plist><dict><key>UIApplicationSceneManifest</key><dict><key>UIApplicationSupportsMultipleScenes</key><false/><key>UISceneConfigurations</key><dict><key>UIWindowSceneSessionRoleApplication</key><array><dict><key>UISceneConfigurationName</key><string>Default</string><key>UISceneDelegateClassName</key><string>TusSceneDelegate</string></dict></array></dict></dict><key>NSBluetoothAlwaysUsageDescription</key><string>Bluetooth MIDI: connect wireless MIDI keyboards and controllers.</string><key>UIFileSharingEnabled</key><true/><key>LSSupportsOpeningDocumentsInPlace</key><true/></dict></plist>")
 else()
 	set(TUS_IOS_PLIST_ARGS "")
 endif()

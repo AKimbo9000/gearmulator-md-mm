@@ -50,8 +50,26 @@ EditorWindow::EditorWindow(juce::AudioProcessor& _p, PluginEditorState& _s, juce
 	m_gearButton->setTooltip("Settings");
 	m_gearButton->onClick = [this]
 	{
-		if (auto* editor = m_state.getEditor())
-			editor->showSettings(!editor->settingsOpened());
+		auto* editor = m_state.getEditor();
+		if (!editor)
+			return;
+		if (editor->settingsOpened())
+		{
+			editor->showSettings(false);
+			return;
+		}
+		if (!g_iosOpenSettingsSheet)
+		{
+			editor->showSettings(true);
+			return;
+		}
+		juce::Component::SafePointer<EditorWindow> self(this);
+		g_iosOpenSettingsSheet(*this, [self]
+		{
+			if (self)
+				if (auto* e = self->m_state.getEditor())
+					e->showSettings(true);
+		});
 	};
 	addAndMakeVisible(*m_gearButton);
 #endif
@@ -68,6 +86,8 @@ EditorWindow::~EditorWindow()
 }
 
 #if JUCE_IOS
+std::function<void(juce::Component&, std::function<void()>)> g_iosOpenSettingsSheet;
+
 namespace
 {
 	// The part of the screen the panel may use: the display minus its safe-area insets (notch, Dynamic Island,
