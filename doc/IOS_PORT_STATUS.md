@@ -402,3 +402,37 @@ MM gains less than its 8% profile share suggests: its hot loops have three-instr
 - **JIT:** assumes the device JIT reaches the desktop JIT's speed, since it is the same arm64 code.
 
 **Conclusion:** the MM interpreter stays below real time on both devices even at its best. Its remaining cost is spread thin, so another quick win of more than ~10% is unlikely. The MM thread bound (2.09x) would be needed to reach about 1x, and MM's sync gap of about 103 DSP cycles makes that bound hard to approach.
+
+### Recommendation (2026-11-26)
+
+**Build the standalone Monomachine app with both engines, and make the JIT the engine it aims for.** PLAN.md has been rewritten for this as Phases A–D.
+
+1. **The JIT is the only measured route to real time for MM on both devices.**
+   - The MM interpreter is 0.66x on the M4 Max (opt build), about 0.73x with PGO. Its projected sustained rate is 0.47–0.62x on the iPad and 0.40–0.55x on the iPhone.
+   - The profile shows no remaining hot spot big enough to close that gap: the two fast paths gave +1.5%, and the rest is spread thinly.
+   - The MM JIT is 2.77x on the Mac. Projected sustained, about 1.8–2.4x on the iPad and 1.5–2.1x on the iPhone.
+   - The JIT also reproduces `doc/ios-baselines` exactly. The MM interpreter does not yet: it has link dropouts in the sine tests.
+2. **The interpreter stays in as the guaranteed engine.**
+   - StikDebug's TXM route is officially "limited app availability" on 26.x [S2], and "26.6 and 27 only work with a few apps" [S5].
+   - There is a third-party report that StikDebug 3.2.2 cannot attach on 27.2.1 [S3], the iPhone's exact version.
+   - The app must therefore start, play and be editable on the interpreter, clearly marked as such. Slower, and below real time for MM, but never broken.
+3. **The JIT needs a new code allocator, not a new JIT.**
+   - **The allocator:** dsp56300's asmjit code goes into one region that StikDebug prepares (`brk #0xf00d`, x16 = 1), written through a `vm_remap` RW alias, with the icache flushed, before detaching [S1][S4].
+   - **Proving it:** the allocator can be exercised on macOS against the baseline before any device run.
+   - **The only entitlement** is `get-task-allow`, which our development-signed builds carry [S1].
+4. **Defer threads.**
+   - MM's ideal bound is 2.09x, but its mixer meets the producer about every 103 DSP cycles, so a timed mode would be mostly synchronisation.
+   - Threads are worth revisiting only if the JIT route fails on both devices.
+5. **First thing to test on hardware**, as soon as a signing identity exists: whether StikDebug attaches to a development-signed test app on each device. That is iPadOS 27.0 on the iPad and iOS 27.2.1 on the iPhone, where [S3] reports trouble. It decides how much the JIT matters per device before Phase B is finished.
+
+**Status of the inputs:**
+- Signing identity: present.
+- iPhone 17 Pro Max: connected, Developer Mode enabled.
+- iPad Pro M4: Developer Mode enabled.
+
+**What is measured and what is projected.**
+- **Measured:** every Mac number above (rtf, profile, thread bound, sync gaps).
+- **Projected:**
+  - all device numbers (assumptions in the Step 3 projection table);
+  - the A19 Pro's single-core speed relative to M4 (not verified);
+  - StikDebug's behaviour on these two OS versions, known only from the cited reports, not tried.
