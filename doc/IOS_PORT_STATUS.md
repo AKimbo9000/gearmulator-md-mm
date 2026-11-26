@@ -268,3 +268,77 @@ MD uses the block link, so it sends hardly any serial link frames. MM runs the s
 - the minimum gap between sync events (only the mean is computed)
 - the PGO gain on a scenario other than the training one
 - any number on the iPad itself (Phase 1.5)
+
+## New target (2026-11-26): standalone Monomachine on iPad Pro M4 and iPhone 17 Pro Max
+
+The app has to launch and run with no Mac and no cable; a one-time setup step that needs the Mac is acceptable.
+
+- **Devices:** iPad Pro 13" M4 (iPad16,6, iPadOS 27.0, Developer Mode on) and iPhone 17 Pro Max (iPhone18,2, iOS 27.2.1). Both are A15+/M2+ class, so both have TXM.
+- The iPhone is paired but was not connected, so its Developer Mode state is unread. Its IDs are in `CLAUDE.local.md`.
+
+### Step 1: what JIT through StikDebug needs (research, 2026-11-26)
+
+Sources:
+- [S1] StikDebug's integration guide, https://github.com/StikDebug/StikJIT/blob/main/INTEGRATION.md
+- [S2] StikDebug README, https://github.com/StikDebug/StikDebug
+- [S3] Kernarium issue #71, https://github.com/imxieyi/Kernarium/issues/71 (third party, opened 2026-11-26, closed "not planned")
+- [S4] Play--CodeGen PR #34, https://github.com/jpd002/Play--CodeGen/pull/34 (third party, unmerged)
+- [S5] SideStore JIT docs, https://docs.sidestore.io/docs/advanced/jit ("as of June 17 2026")
+
+None of these is Apple documentation.
+
+**What the app needs**
+- **Entitlement:** only `get-task-allow`. Per [S1], "The process receiving JIT must have `get-task-allow`." Our Xcode development-signed builds already carry it. `MAP_JIT` needs `dynamic-codesigning` [S4], which we cannot get; the TXM route does not use it.
+- **Developer Mode** must be on [S1].
+- **Optional:** `LSApplicationQueriesSchemes` containing `stikdebug`, so the app can offer to open `stikdebug://enable-jit?bundle-id=…&pid=…` [S1].
+
+**Memory pattern on TXM devices (iOS 26+, A15+/M2+)**
+- A debugged app still cannot execute memory it maps itself [S4]. Instead, after `CS_DEBUGGED` appears, it asks the debugger for each executable region:
+  - `brk #0xf00d` with `x16 = 1` (prepare), `x0` = address or NULL ("asks the debug server to allocate the RX mapping"), `x1` = size; the RX address comes back in `x0` [S1].
+  - It then creates its own writable alias of that region (`vm_remap` + `vm_protect` [S4]), writes code only through the alias, and executes at the RX address, which is execute-only.
+- All regions must be prepared before detaching (`x16 = 0`). "A region introduced later cannot be prepared by a script that has already detached" [S1].
+- The pages are 16 KiB. [S4] requests one 64 MB region.
+- [S4] warns that passing a self-mapped address appears to succeed but never gets serviced, and that an unserviced `brk` can leave the instruction's encoding in `x0`. So the result must be validated: page-aligned, and inside an RX mapping of this process.
+- StikDebug runs a per-app script, `universal.js` (recommended) or `legacy.js`. On non-TXM devices "debugger attachment alone enables JIT" and no script is used [S1].
+
+**Detection**
+- Wait for `CS_DEBUGGED` in the code-signing status before any `brk` [S1]. A `brk` with no script attached "will crash the process" [S1].
+- StikJIT exposes a TXM check (Present / Not Present / Unknown) [S1].
+
+**What needs a computer**
+- **Once:** the pairing file, and installing StikDebug plus our app. With a paid team, our app is installed and signed for a year from Xcode/devicectl.
+- **On-device afterwards** [S2]: StikDebug, LocalDevVPN, Wi-Fi (or cellular, then Airplane Mode [S1]).
+- **The developer disk image** has to be mounted again after every reboot [S5]; StikDebug does that on the device.
+- **Per process launch:** StikDebug attaches with the app's PID, so JIT is enabled again on every launch [S1][S5].
+
+**Reliability on 26.x / 27.x**
+- [S2]: "17.4 – 18.x … Stable"; "26.0+ … Limited App Availability". Apps have to implement the protocol.
+- [S5]: "26.6 and 27 only work with a few apps."
+- [S4]: verified on 26.4.2 and 26.6.2. A companion PR claims 26.7 and 27; only its title was seen.
+- [S3]: on iPhone15,3 with iOS 27.2.1, StikDebug 3.2.2 "cannot attach on 27.2.1". That is the iPhone 17 Pro Max's exact version. The trapping in that report was the reporter's driver bug; the attach failure is unresolved.
+- **Conclusion:** JIT on 27.x is possible but fragile, and can break with any iOS update. It cannot be the only engine.
+
+**Can asmjit/dsp56300 adopt it?** Yes, with a custom code allocator; no source covers asmjit specifically.
+- dsp56300 today creates `asmjit::JitRuntime` objects (`jit.cpp:123`, `jittrampoline.h:74`), which map their own memory. That memory will not execute on TXM.
+- **Needed:** an `asmjit::Target` subclass whose `_add()`:
+  1. sub-allocates from the one pre-prepared RX region (a free list with 16-byte granularity; blocks are freed when P memory changes);
+  2. calls `CodeHolder::relocateToBase(rx)`, then `copyFlattenedData()` into the RW alias;
+  3. calls `sys_icache_invalidate(rx, size)`. Our asmjit fork already includes `OSCacheControl.h` on iOS.
+- The JIT and the trampolines then use that target instead of `JitRuntime`.
+- The region size must be fixed before detaching. Measure MM's peak JIT code size on macOS first, then reserve about 2× that.
+
+### Step 2: dual-engine design (one app, JIT when available, interpreter otherwise)
+
+1. **Both engines in one binary.** Today the engine is fixed at compile time (`DSP56K_FORCE_INTERPRETER` → `g_jitSupported` → `constexpr g_useJIT`, `dsp.h:42`). Make it a per-DSP runtime choice, set at construction: `exec()`, `execUntilCycles()`, `execInlinePeripheralCheck()` and the interpreter-only cycle accounting branch on a member, not a constant. Those branches are once per call and predictable. The desktop JIT build keeps its constant path, so its results and speed cannot change.
+2. **Decide once, at launch, before the machine is created.**
+   - (a) Read `csops(getpid(), CS_OPS_STATUS)`. If `CS_DEBUGGED` is clear, use the interpreter.
+   - (b) If it is set on a TXM device, do the prepare handshake for one fixed-size region, validate the returned address, create the RW alias, then detach. A SIGTRAP handler steps over an unanswered `brk`, as in [S4]. Any failure means the interpreter.
+   - (c) On a non-TXM device, `CS_DEBUGGED` alone is enough, so plain asmjit `JitRuntime` works.
+   - The decision lasts for the process. Switching engines needs a relaunch; the machine's state survives that through the existing state save/restore (sysex).
+3. **Never unusable.** The interpreter is always compiled in and is the default. JIT is only tried when the OS says the process is debugged, and no executable page is touched unless the handshake has proved it is serviced. An iOS update that breaks StikDebug only puts the app back on the interpreter.
+4. **Shown to the user.**
+   - A badge in the editor's header: "Engine: JIT (StikDebug)" or "Engine: Interpreter".
+   - A settings page with the reason: not debugged / TXM handshake failed / region too small / JIT disabled by the user. It also shows the live real-time load from the audio callback.
+   - A "Relaunch with JIT" button that opens StikDebug's URL when `stikdebug` can be opened.
+   - The same facts go into the self-test JSON, so a device run records which engine it measured.
+5. **The same results either way.** The iOS JIT generates the same arm64 code as the desktop JIT, so it reproduces `doc/ios-baselines` exactly. A self-test hash on the device checks that. The interpreter matches the JIT for MD audio but not yet for MM (see the Phase 1 entries), which is another reason to prefer the JIT whenever it works.
