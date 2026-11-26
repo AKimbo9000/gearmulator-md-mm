@@ -13,7 +13,7 @@ produced it.
 | 0 Commit, forks, harness, verify scripts | **done** |
 | 1 Port fixes; interpreter == JIT on macOS | in progress: 1a done, livelock fixed, MD audio matches, MM diverges |
 | 1.5 Minimal device build, serial interpreter RTF | not started |
-| 2 Interpreter RTF on this Mac | not started |
+| 2 Interpreter RTF on this Mac | **done** (`verify-interp.sh --perf` PASS) |
 | 3a–3d Timed threaded mode | not started |
 | 4 Simulator build + self-test | not started |
 | 5 Device build + self-test | not started |
@@ -206,3 +206,65 @@ The "before" runs shared the machine with two other jobs, so the gain is approxi
 - `mmDigiproFirmwareTest` (interpreter, 1200 s limit, run alone): 1/1 Test #87: mmDigiproFirmwareTest ............***Timeout 600.04 sec 0% tests passed, 1 tests failed out of 1 (run alone; the test's own TIMEOUT 600 property overrides `ctest --timeout`, so it never got more than 600 s. Whether it passes given ~2x the JIT's 150 s is still unmeasured: run the binary directly, or raise its TIMEOUT for interpreter builds)
 
 **Next step, refined:** before the full block-shaped interpreter, instrument the MM link in an interpreter run. Count `blockingPop` empty reads and purges and `pushToInput` drops per reason (receiver disabled, window opened during catch-up, strobe epoch, overrun) around frame 1975 of the sine test, and compare with the JIT, which has none. The reason that fires names which scheduler or catch-up path the interpreter's instruction-granular stops break. Then make that path stop where the JIT would. PLAN.md 1b is the general form of that fix.
+
+### 2026-11-26: Phase 2, interpreter speed on this Mac
+
+`scripts/verify-interp.sh --perf` → **`VERIFY RESULT PASS`** (exit 0, logs `build/verify/verify-interp/20261126-212208`).
+- **Machine:** Apple M4 Max.
+- **Scenario:** `trigPressFirmwareTest` (25 s boot, Trig 1 press), then 3 windows of 20 s emulated time each. The best window counts; within each run the windows agree within ~2%.
+- **One run at a time:** an idle check (1-minute load ≤ 3) passed before every run, at load 1.7–2.4.
+- **Configurations:** all Release, arm64:
+  - plain: `-Ofast`
+  - opt: `GEARMULATOR_MDMM_APPLE_OPTIMIZE_DSP` + `GEARMULATOR_MDMM_APPLE_THINLTO`
+  - pgo: opt plus a profile trained on the MD and MM `trigPressFirmwareTest` scenario (`build/perf-pgo/mdmm-interp.profdata`)
+
+| | JIT | interp plain | interp opt | interp PGO | PGO / plain |
+|---|---|---|---|---|---|
+| **MD** rtf | 6.34x | 0.74x | 0.86x | **0.99x** | +34% |
+| MD mixer / producer Minstr/s | 503 / 524 | 58.6 / 61.1 | 68.2 / 71.1 | 78.7 / 82.1 | |
+| **MM** rtf | 2.77x | 0.57x | 0.65x | **0.72x** | +27% |
+| MM mixer / producer Minstr/s | 228 / 223 | 46.7 / 45.7 | 53.4 / 52.3 | 59.3 / 58.0 | |
+
+*Caveat:* the profile was trained on the same scenario that is measured, so the PGO column is an upper estimate for this workload.
+
+**Host time per component and the thread bound** (`MD_TRANSPORT_DIAGNOSTICS` interpreter build, full scenario). The timer switches owner around every DSP run, so DSP runs nested inside ColdFire instructions or inside the other DSP are attributed to the DSP that ran.
+
+| | ColdFire + scheduler | mixer | producer | perf.bound (total / largest) |
+|---|---|---|---|---|
+| MD | 3.8% | 63.6% | 32.6% | **≤ 1.57x** |
+| MM | 6.0% | 47.9% | 46.1% | **≤ 2.09x** |
+
+**Synchronisation events, interpreter.** Each is a point where one component must see another's state at a given time. The mean gap is in DSP cycles (101.6 MHz) of emulated time.
+
+| path | MD /s | MD mean gap | MM /s | MM mean gap |
+|---|---|---|---|---|
+| ColdFire → mixer catch-up | 206k | 493 | 329k | 309 |
+| ColdFire → producer catch-up | 44k | 2,299 | 393k | 258 |
+| DSP → DSP catch-up, mixer side | 222k | 457 | 983k | **103** |
+| DSP → DSP catch-up, producer side | 336 | 302,400 | 0 | – |
+| HI08-bridge inline runs, mixer | 117k | 867 | 217k | 469 |
+| HI08-bridge inline runs, producer | 21k | 4,780 | 225k | 452 |
+| scheduler slices (ColdFire / mixer / producer) | 33k / 31k / 35k | ~3,000 | 33k / 29k / 32k | ~3,000 |
+| ESSI link frames, producer → mixer | 1.5k | – | 1.04M (36.4M accepted, 1.9M purged) | – |
+
+MD uses the block link, so it sends hardly any serial link frames. MM runs the serial link at the frame rate.
+
+**What this means for Phase 3:**
+- **MD.** The mixer dominates, so three ideal threads give at most 1.57x.
+- **MM.** The split is even (bound 2.09x), but the mixer meets the producer every ~103 DSP cycles (about 1 µs of emulated time), and the ColdFire touches each DSP every ~260–310 cycles. A timed mode's lookahead L has to sit at or below that, or MM's handshakes change. That is far below the one-ESSI-frame (2,304-cycle) lookahead the plan assumed.
+- So the timed mode's speedup on MM will be limited by sync cost, not by the 2.09x split. Phase 3a should measure what L the firmware actually needs before committing to threads.
+
+**iPad Pro M4 projection** (to be replaced by the Phase 1.5 measurement):
+- **Peak.** The M4 Max and the iPad's M4 share the same P-core generation, at about 4.5 vs 4.4 GHz. So expect roughly the Mac numbers, ×0.95–1.0.
+- **Sustained.** The earlier work measured an iPad M5 falling from 1.59x cool to 0.999x after 40 minutes, about ×0.63. Assume ×0.65–0.85.
+- Serial interpreter, PGO:
+  - **MD** peak ≈ 0.94–0.99x, sustained ≈ 0.65–0.85x
+  - **MM** peak ≈ 0.69–0.72x, sustained ≈ 0.47–0.61x
+- **Neither instrument reaches real time on the iPad without threads.** With the ideal thread bound:
+  - MD ≤ ~1.5x peak / ~1.0–1.3x sustained
+  - MM ≤ ~1.5x peak / ~1.0–1.3x sustained, before sync costs
+
+**What is not measured yet:**
+- the minimum gap between sync events (only the mean is computed)
+- the PGO gain on a scenario other than the training one
+- any number on the iPad itself (Phase 1.5)

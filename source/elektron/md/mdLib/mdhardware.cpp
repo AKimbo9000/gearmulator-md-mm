@@ -974,6 +974,8 @@ namespace md
 	{
 #if MD_TRANSPORT_DIAGNOSTICS
 		auto result = m_transportScorecard;
+		transportTimeSwitch(m_transportTimeOwner);	// account the interval that is running now
+		result.wallNanoseconds = m_transportTimeNs;
 		// Sample the actual queues, independently of the recording counters, so
 		// queue-conservation checks can detect an unaccounted mutation.
 		result.link[0].currentRingDepth =
@@ -1663,13 +1665,16 @@ namespace md
 			score.maximumRequestedCycles = std::max(
 				score.maximumRequestedCycles, diagnosticRequested);
 #endif
-			if(m_schedBoundedJit)
-				d.dsp().execUntilCycles(stopCyc);
-			else
 			{
-				d.dsp().exec();
-				while(d.dsp().getCycles() < stopCyc)
+				MD_TRANSPORT_TIME(*this, &d == &m_dspMixer ? 1u : 2u);
+				if(m_schedBoundedJit)
+					d.dsp().execUntilCycles(stopCyc);
+				else
+				{
 					d.dsp().exec();
+					while(d.dsp().getCycles() < stopCyc)
+						d.dsp().exec();
+				}
 			}
 #if MD_TRANSPORT_DIAGNOSTICS
 			const auto diagnosticExecuted = d.dsp().getCycles() - startCyc;
@@ -1936,13 +1941,16 @@ namespace md
 		const bool s_mmBp = isMonomachine();
 		// Without the backpressure gate the loop below is "run blocks until the first one reaches
 		// the stop cycle", which is what the bounded trampoline does under a single entry.
-		if(!s_mmBp && m_schedBoundedJit)
-			d.dsp().execUntilCycles(std::min(targetCyc, clampStop));
-		else
-			while(d.dsp().getCycles() < targetCyc && d.dsp().getCycles() < clampStop
-				&& (!s_mmBp
-					|| d.hostTxBacklog() <= policy.hostTransmitBackpressureThresholdWords))
-				d.dsp().execInlinePeripheralCheck();
+		{
+			MD_TRANSPORT_TIME(*this, &d == &m_dspMixer ? 1u : 2u);
+			if(!s_mmBp && m_schedBoundedJit)
+				d.dsp().execUntilCycles(std::min(targetCyc, clampStop));
+			else
+				while(d.dsp().getCycles() < targetCyc && d.dsp().getCycles() < clampStop
+					&& (!s_mmBp
+						|| d.hostTxBacklog() <= policy.hostTransmitBackpressureThresholdWords))
+					d.dsp().execInlinePeripheralCheck();
+		}
 		MD_TRANSPORT_RECORD(const auto executed = d.dsp().getCycles() - startCyc;
 			score.executedCycles += executed;
 			score.maximumExecutedCycles = std::max(score.maximumExecutedCycles, executed);
@@ -2008,13 +2016,16 @@ namespace md
 			score.maximumRequestedCycles = std::max(score.maximumRequestedCycles, requested););
 		m_schedInLinkDelivery = true;
 		const bool bpGate = isMonomachine();
-		if(!bpGate && m_schedBoundedJit)
-			d.dsp().execUntilCycles(std::min(targetCyc, clampStop));
-		else
-			while(d.dsp().getCycles() < targetCyc && d.dsp().getCycles() < clampStop
-				&& (!bpGate
-					|| d.hostTxBacklog() <= policy.hostTransmitBackpressureThresholdWords))
-				d.dsp().execInlinePeripheralCheck();
+		{
+			MD_TRANSPORT_TIME(*this, &d == &m_dspMixer ? 1u : 2u);
+			if(!bpGate && m_schedBoundedJit)
+				d.dsp().execUntilCycles(std::min(targetCyc, clampStop));
+			else
+				while(d.dsp().getCycles() < targetCyc && d.dsp().getCycles() < clampStop
+					&& (!bpGate
+						|| d.hostTxBacklog() <= policy.hostTransmitBackpressureThresholdWords))
+					d.dsp().execInlinePeripheralCheck();
+		}
 		m_schedInLinkDelivery = false;
 		MD_TRANSPORT_RECORD(const auto executed = d.dsp().getCycles() - startCyc;
 			score.executedCycles += executed;

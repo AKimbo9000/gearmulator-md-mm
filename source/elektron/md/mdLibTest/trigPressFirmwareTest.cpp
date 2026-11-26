@@ -155,7 +155,7 @@ int main(const int _argc, char** _argv)
 	const auto model = std::string_view(_argv[1]) == "md" ? md::MachineModel::Machinedrum : md::MachineModel::Monomachine;
 	const char* renderPath = nullptr;
 	const char* countersPath = nullptr;
-	uint32_t bootSeconds = 25, holdSeconds = 2, tailSeconds = 10;
+	uint32_t bootSeconds = 25, holdSeconds = 2, tailSeconds = 10, windows = 0, windowSeconds = 20;
 	for(int i = 2; i + 1 < _argc; i += 2)
 	{
 		const std::string_view arg(_argv[i]);
@@ -164,6 +164,8 @@ int main(const int _argc, char** _argv)
 		else if(arg == "--boot-seconds") bootSeconds = static_cast<uint32_t>(std::strtoul(_argv[i + 1], nullptr, 10));
 		else if(arg == "--hold-seconds") holdSeconds = static_cast<uint32_t>(std::strtoul(_argv[i + 1], nullptr, 10));
 		else if(arg == "--tail-seconds") tailSeconds = static_cast<uint32_t>(std::strtoul(_argv[i + 1], nullptr, 10));
+		else if(arg == "--windows") windows = static_cast<uint32_t>(std::strtoul(_argv[i + 1], nullptr, 10));
+		else if(arg == "--window-seconds") windowSeconds = static_cast<uint32_t>(std::strtoul(_argv[i + 1], nullptr, 10));
 		else { std::cerr << "unknown argument " << arg << '\n'; return 2; }
 	}
 
@@ -202,6 +204,56 @@ int main(const int _argc, char** _argv)
 		require(hardware.trySendPanelEvent(up.row, up.mask), "trig release rejected");
 		const double tailPeak = recorder.run(md::g_samplerate * tailSeconds);
 
+		// --windows N: N back-to-back measurement windows after the scenario, each windowSeconds of emulated time.
+		// The best window is the throughput figure (PLAN.md Phase 2); each one is printed.
+		double bestWindowRtf = 0.0;
+		for(uint32_t w = 0; w < windows; ++w)
+		{
+			auto& mx = hardware.getDspMixer().dsp();
+			auto& pr = hardware.getDspProducer().dsp();
+			const auto i0 = mx.getInstructionCounter(), i1 = pr.getInstructionCounter();
+			const auto t0 = std::chrono::steady_clock::now();
+			recorder.run(md::g_samplerate * windowSeconds);
+			const double wallW = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+			const double rtfW = wallW > 0.0 ? windowSeconds / wallW : 0.0;
+			bestWindowRtf = std::max(bestWindowRtf, rtfW);
+			std::printf("PERF window=%u seconds=%u wall=%.3f rtf=%.4f dsp0_mips=%.2f dsp1_mips=%.2f\n", w, windowSeconds, wallW, rtfW,
+				static_cast<double>(mx.getInstructionCounter() - i0) / wallW / 1e6,
+				static_cast<double>(pr.getInstructionCounter() - i1) / wallW / 1e6);
+		}
+
+		// MD_TRANSPORT_DIAGNOSTICS builds: synchronisation events and host time per component
+		if(const auto score = hardware.getTransportScorecard(); score.enabled)
+		{
+			const double seconds = static_cast<double>(recorder.frames()) / md::g_samplerate;
+			const auto path = [&](const char* _name, const md::SchedulerPathScore& _p)
+			{
+				std::printf("SYNC %s calls=%llu per_s=%.0f executed_cycles=%llu max_executed=%llu\n", _name,
+					static_cast<unsigned long long>(_p.calls), static_cast<double>(_p.calls) / seconds,
+					static_cast<unsigned long long>(_p.executedCycles), static_cast<unsigned long long>(_p.maximumExecutedCycles));
+			};
+			path("background_uc", score.backgroundUc);
+			for(int d = 0; d < 2; ++d)
+			{
+				char name[32];
+				std::snprintf(name, sizeof(name), "background_dsp%d", d); path(name, score.backgroundDsp[d]);
+				std::snprintf(name, sizeof(name), "coldfire_to_dsp%d", d); path(name, score.coldFireToDsp[d]);
+				std::snprintf(name, sizeof(name), "dsp_to_dsp%d", d); path(name, score.dspToDsp[d]);
+				std::snprintf(name, sizeof(name), "inline_hdi08_dsp%d", d); path(name, score.inlineHdi08[d]);
+				std::printf("SYNC link%d transmit_frames=%llu accepted=%llu empty_reads=%llu purged=%llu per_s=%.0f\n", d,
+					static_cast<unsigned long long>(score.link[d].transmitFrames), static_cast<unsigned long long>(score.link[d].acceptedFrames),
+					static_cast<unsigned long long>(score.link[d].emptyReads), static_cast<unsigned long long>(score.link[d].purgedFrames()),
+					static_cast<double>(score.link[d].transmitFrames) / seconds);
+			}
+			const auto& ns = score.wallNanoseconds;
+			const double total = static_cast<double>(ns[0] + ns[1] + ns[2]);
+			const double largest = static_cast<double>(std::max({ns[0], ns[1], ns[2]}));
+			std::printf("SPLIT uc_ns=%llu mixer_ns=%llu producer_ns=%llu uc=%.1f%% mixer=%.1f%% producer=%.1f%% bound=%.2f\n",
+				static_cast<unsigned long long>(ns[0]), static_cast<unsigned long long>(ns[1]), static_cast<unsigned long long>(ns[2]),
+				total > 0 ? 100.0 * ns[0] / total : 0.0, total > 0 ? 100.0 * ns[1] / total : 0.0, total > 0 ? 100.0 * ns[2] / total : 0.0,
+				largest > 0 ? total / largest : 0.0);
+		}
+
 		const double wall = std::chrono::duration<double>(std::chrono::steady_clock::now() - wallStart).count();
 		const double emulated = static_cast<double>(recorder.frames()) / md::g_samplerate;
 		auto& mixer = hardware.getDspMixer().dsp();
@@ -224,6 +276,7 @@ int main(const int _argc, char** _argv)
 			<< " dsp1_cycles=" << producer.getCycles()
 			<< " ff0=" << mixer.getFastForwardCalls() << "/" << mixer.getFastForwardInstructions()
 			<< " ff1=" << producer.getFastForwardCalls() << "/" << producer.getFastForwardInstructions()
+			<< " best_window_rtf=" << bestWindowRtf
 			<< " wall_s=" << wall
 			<< " rtf=" << (wall > 0.0 ? emulated / wall : 0.0)
 			<< '\n';

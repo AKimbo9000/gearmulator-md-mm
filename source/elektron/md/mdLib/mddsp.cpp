@@ -281,11 +281,14 @@ namespace md
 			const uint64_t startCycle = m_dsp.getCycles();
 			const uint64_t clampStop = startCycle
 				+ schedInlineClamp(m_hardware.getModel());
-			while(!hdi08().hasTX()
-				&& (!m_hardware.isMonomachine() || (!m_timedHostRx.pending() && m_hdiUC.canReceiveData()))
-				&& (hdi08().hostCommandBusy() || dsp().hasPendingInterrupts())
-				&& m_dsp.getCycles() < clampStop)
-				m_dsp.exec();
+			{
+				MD_TRANSPORT_TIME(m_hardware, m_index + 1);
+				while(!hdi08().hasTX()
+					&& (!m_hardware.isMonomachine() || (!m_timedHostRx.pending() && m_hdiUC.canReceiveData()))
+					&& (hdi08().hostCommandBusy() || dsp().hasPendingInterrupts())
+					&& m_dsp.getCycles() < clampStop)
+					m_dsp.exec();
+			}
 #if MD_TRANSPORT_DIAGNOSTICS
 			const bool workComplete = hdi08().hasTX()
 				|| (m_hardware.isMonomachine()
@@ -321,8 +324,11 @@ namespace md
 		const uint64_t startCycle = m_dsp.getCycles();
 		const uint64_t clampStop = startCycle
 			+ schedInlineClamp(m_hardware.getModel());
-		while(hdi08().hasRXData() && m_dsp.getCycles() < clampStop)
-			m_dsp.exec();
+		{
+			MD_TRANSPORT_TIME(m_hardware, m_index + 1);
+			while(hdi08().hasRXData() && m_dsp.getCycles() < clampStop)
+				m_dsp.exec();
+		}
 #if MD_TRANSPORT_DIAGNOSTICS
 		m_hardware.recordInlineHdi08Run(m_index, startCycle, clampStop,
 			!hdi08().hasRXData());
@@ -341,8 +347,11 @@ namespace md
 		const uint64_t startCycle = m_dsp.getCycles();
 		const uint64_t clampStop = startCycle
 			+ schedInlineClamp(m_hardware.getModel());
-		while(hdi08().hostCommandBusy() && m_dsp.getCycles() < clampStop)
-			m_dsp.exec();
+		{
+			MD_TRANSPORT_TIME(m_hardware, m_index + 1);
+			while(hdi08().hostCommandBusy() && m_dsp.getCycles() < clampStop)
+				m_dsp.exec();
+		}
 #if MD_TRANSPORT_DIAGNOSTICS
 		m_hardware.recordInlineHdi08Run(m_index, startCycle, clampStop,
 			!hdi08().hostCommandBusy());
@@ -377,8 +386,11 @@ namespace md
 			const uint64_t startCycle = m_dsp.getCycles();
 			const uint64_t clampStop = startCycle
 				+ schedInlineClamp(m_hardware.getModel()) * 4;
-			while(!hdi08().rxData().empty() && m_dsp.getCycles() < clampStop)
-				m_dsp.exec();
+			{
+				MD_TRANSPORT_TIME(m_hardware, m_index + 1);
+				while(!hdi08().rxData().empty() && m_dsp.getCycles() < clampStop)
+					m_dsp.exec();
+			}
 #if MD_TRANSPORT_DIAGNOSTICS
 			m_hardware.recordInlineHdi08Run(m_index, startCycle, clampStop,
 				hdi08().rxData().empty());

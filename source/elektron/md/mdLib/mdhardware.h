@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <atomic>
 #include <memory>
 #include <mutex>
@@ -246,6 +247,25 @@ namespace md
 		// Diagnostic snapshot. The caller must serialize with the machine thread,
 		// as Device does for its other control-plane observations.
 		TransportScorecard getTransportScorecard() noexcept;
+
+		// Host time per component for the thread estimate (PLAN.md Phase 2): 0 = outside any DSP run (ColdFire,
+		// scheduler, host glue), 1 = mixer, 2 = producer. Switched around whole DSP runs, never per instruction, and
+		// only in MD_TRANSPORT_DIAGNOSTICS builds (MD_TRANSPORT_TIME); the members exist in every build so the class
+		// layout does not depend on the option.
+		uint32_t transportTimeSwitch(const uint32_t _owner) noexcept
+		{
+			const auto now = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+				std::chrono::steady_clock::now().time_since_epoch()).count());
+			if(m_transportTimeStamp)
+				m_transportTimeNs[m_transportTimeOwner] += now - m_transportTimeStamp;
+			m_transportTimeStamp = now;
+			const auto previous = m_transportTimeOwner;
+			m_transportTimeOwner = _owner;
+			return previous;
+		}
+		std::array<uint64_t, 3> m_transportTimeNs{};
+		uint32_t m_transportTimeOwner = 0;
+		uint64_t m_transportTimeStamp = 0;
 		void recordInlineHdi08Run(uint32_t _dspIndex, uint64_t _startCycle,
 			uint64_t _clampCycle, bool _workComplete) noexcept;
 		// _direction: 0 = mixer -> producer, 1 = producer -> mixer
@@ -530,4 +550,20 @@ namespace md
 		PanelInputQueue m_panelIn;
 
 	};
+
+#if MD_TRANSPORT_DIAGNOSTICS
+	struct TransportTimeScope
+	{
+		TransportTimeScope(Hardware& _hw, const uint32_t _owner) : m_hw(_hw), m_previous(_hw.transportTimeSwitch(_owner)) {}
+		~TransportTimeScope() { m_hw.transportTimeSwitch(m_previous); }
+		TransportTimeScope(const TransportTimeScope&) = delete;
+		TransportTimeScope& operator=(const TransportTimeScope&) = delete;
+	private:
+		Hardware& m_hw;
+		uint32_t m_previous;
+	};
+#define MD_TRANSPORT_TIME(HW, OWNER) const ::md::TransportTimeScope mdTransportTimeScope(HW, OWNER)
+#else
+#define MD_TRANSPORT_TIME(HW, OWNER) do {} while(false)
+#endif
 }

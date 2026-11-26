@@ -98,6 +98,8 @@ namespace md
 		// machine scheduler paths above.
 		std::array<SchedulerPathScore, 2> inlineHdi08;
 		std::array<uint64_t, 2> mmBackpressureParkDecisions{};
+		// Host time in nanoseconds: [0] outside any DSP run (ColdFire, scheduler, host glue), [1] mixer, [2] producer
+		std::array<uint64_t, 3> wallNanoseconds{};
 		uint64_t idleSelfBranchInstructions = 0;
 
 		bool mdRendezvousActive = false;

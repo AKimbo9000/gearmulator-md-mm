@@ -29,7 +29,6 @@ for arg in "$@"; do
 	esac
 done
 
-if [[ $MODE == perf ]]; then verify_stop_at perf "not implemented until PLAN.md Phase 2"; fi
 if [[ $MODE == timed ]]; then verify_stop_at timed "not implemented until PLAN.md Phase 3"; fi
 
 BASELINE_DIR="$VERIFY_ROOT/doc/ios-baselines"
@@ -40,6 +39,132 @@ MODELS=(md mm)
 
 verify_find_roms
 [[ $VERIFY_FAILED -ne 0 ]] && verify_finish
+
+# ---------------------------------------------------------------- --perf (PLAN.md Phase 2)
+# Interpreter real-time factor in three configurations, measured one run at a time on an idle machine:
+#   plain      Release (-Ofast), as build/mac-interp
+#   opt        + GEARMULATOR_MDMM_APPLE_OPTIMIZE_DSP + GEARMULATOR_MDMM_APPLE_THINLTO
+#   pgo        + a profile trained on this tree's MD and MM interpreter scenario
+# plus the JIT for reference, and an MD_TRANSPORT_DIAGNOSTICS build for synchronisation counts and the share of
+# host time per component, from which perf.bound is the speed-up three ideal threads could give (total/largest).
+# Each run: the trigPressFirmwareTest boot and Trig 1 press, then 3 windows of 20 s; the best window counts.
+perf_configure_build()   # <dir> <cmake args...>
+{
+	local dir="$1"; shift
+	run_timeout 900 "$VERIFY_OUT/configure-$(basename "$dir").log" cmake -G Ninja -S . -B "$dir" \
+		-DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES=arm64 -DBUILD_TESTING=ON \
+		-Dgearmulator_BUILD_JUCEPLUGIN=OFF -Dgearmulator_BUILD_INSTALLER=OFF -Dgearmulator_COMPONENT_DSPBRIDGE=OFF \
+		-Dgearmulator_SYNTH_OSIRUS=OFF -Dgearmulator_SYNTH_OSTIRUS=OFF -Dgearmulator_SYNTH_VAVRA=OFF \
+		-Dgearmulator_SYNTH_XENIA=OFF -Dgearmulator_SYNTH_NODALRED2X=OFF -Dgearmulator_SYNTH_JE8086=OFF \
+		-Dgearmulator_SYNTH_88EMU=OFF -Dgearmulator_SYNTH_ELEKTRON=ON "$@" || return 1
+	run_timeout 3600 "$VERIFY_OUT/build-$(basename "$dir").log" cmake --build "$dir" --target trigPressFirmwareTest
+}
+perf_idle()   # wait until the 1-minute load average is at most VERIFY_PERF_MAX_LOAD (default 3); FAIL after
+{             # VERIFY_PERF_IDLE_WAIT seconds (default 600). Our own builds and runs decay out of it first.
+	local load max="${VERIFY_PERF_MAX_LOAD:-3}" waited=0 limit="${VERIFY_PERF_IDLE_WAIT:-600}"
+	while :; do
+		load="$(sysctl -n vm.loadavg | awk '{print $2}')"
+		if awk -v l="$load" -v m="$max" 'BEGIN{exit !(l <= m)}'; then
+			verify "perf.idle$1" PASS "loadavg=$load (max $max, waited ${waited}s)"; return 0
+		fi
+		(( waited >= limit )) && break
+		sleep 15; waited=$((waited + 15))
+	done
+	verify "perf.idle$1" FAIL "loadavg=$load still above $max after ${waited}s: machine busy, numbers would not be valid"; return 1
+}
+perf_run()   # <label> <dir> <model>
+{
+	local label="$1" dir="$2" model="$3" log="$VERIFY_OUT/perf-$1-$3.log" rc
+	perf_idle ".$label.$model" || return 1
+	run_timeout 1800 "$log" "$dir/source/elektron/md/mdLibTest/trigPressFirmwareTest" "$model" \
+		--boot-seconds 25 --hold-seconds 2 --tail-seconds 0 --windows 3 --window-seconds 20
+	rc=$?
+	local best windows mips0 mips1 ready
+	best="$(grep -m1 '^RENDER' "$log" | tr ' ' '\n' | sed -n 's/^best_window_rtf=//p')"
+	ready="$(grep -m1 '^RENDER' "$log" | tr ' ' '\n' | sed -n 's/^boot_ready=//p')"
+	windows="$(grep '^PERF' "$log" | sed -nE 's/.* rtf=([0-9.]+).*/\1/p' | paste -sd, -)"
+	mips0="$(grep '^PERF' "$log" | sed -nE 's/.*dsp0_mips=([0-9.]+).*/\1/p' | sort -n | tail -1)"
+	mips1="$(grep '^PERF' "$log" | sed -nE 's/.*dsp1_mips=([0-9.]+).*/\1/p' | sort -n | tail -1)"
+	printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$label" "$model" "$best" "$windows" "$mips0" "$mips1" >> "$VERIFY_OUT/perf.tsv"
+	if [[ $rc == 0 && $ready == 1 && -n "$best" ]]; then
+		verify "perf.$model.$label" PASS "rtf=${best}x (best of 3x20 s: $windows) mixer=${mips0} producer=${mips1} Minstr/s"
+	else
+		verify "perf.$model.$label" FAIL "exit=$rc boot_ready=$ready rtf=$best"
+	fi
+}
+if [[ $MODE == perf ]]; then
+	PGO_DIR="$VERIFY_ROOT/build/perf-pgo"
+	OPT=(-DGEARMULATOR_MDMM_APPLE_OPTIMIZE_DSP=ON -DGEARMULATOR_MDMM_APPLE_THINLTO=ON)
+	for spec in "build/mac-jit|" "build/mac-interp|-DDSP56K_FORCE_INTERPRETER=ON" \
+		"build/perf-interp-opt|-DDSP56K_FORCE_INTERPRETER=ON ${OPT[*]}" \
+		"build/perf-interp-pgogen|-DDSP56K_FORCE_INTERPRETER=ON ${OPT[*]} -DGEARMULATOR_MDMM_APPLE_PGO_MODE=generate" \
+		"build/perf-interp-diag|-DDSP56K_FORCE_INTERPRETER=ON -DMD_TRANSPORT_DIAGNOSTICS=ON"; do
+		( dir="${spec%%|*}"; args="${spec#*|}"
+		  # shellcheck disable=SC2086
+		  perf_configure_build "$dir" $args; echo $? > "$VERIFY_OUT/built-$(basename "$dir").rc" ) &
+	done
+	wait
+	for d in mac-jit mac-interp perf-interp-opt perf-interp-pgogen perf-interp-diag; do
+		rc="$(cat "$VERIFY_OUT/built-$d.rc")"
+		verify "perf.build.$d" "$([[ $rc == 0 ]] && echo PASS || echo FAIL)" "exit=$rc"
+	done
+	[[ $VERIFY_FAILED -ne 0 ]] && verify_finish
+
+	# PGO: train the instrumented interpreter on both machines' scenario, merge, rebuild with the profile
+	PGO_GEN_BIN=build/perf-interp-pgogen/source/elektron/md/mdLibTest/trigPressFirmwareTest
+	if [[ -f "$PGO_DIR/mdmm-interp.profdata" && "$PGO_DIR/mdmm-interp.profdata" -nt "$PGO_GEN_BIN" ]]; then
+		verify perf.pgo.profile INFO "reusing $PGO_DIR/mdmm-interp.profdata (newer than the instrumented binary)"
+		echo 0 > "$VERIFY_OUT/pgo-train-md.rc"; echo 0 > "$VERIFY_OUT/pgo-train-mm.rc"
+	else
+	rm -rf "$PGO_DIR"; mkdir -p "$PGO_DIR"
+	for model in "${MODELS[@]}"; do
+		( LLVM_PROFILE_FILE="$PGO_DIR/$model-%p.profraw" run_timeout 3600 "$VERIFY_OUT/pgo-train-$model.log" \
+			build/perf-interp-pgogen/source/elektron/md/mdLibTest/trigPressFirmwareTest "$model"
+		  echo $? > "$VERIFY_OUT/pgo-train-$model.rc" ) &
+	done
+	wait
+	xcrun llvm-profdata merge -output="$PGO_DIR/mdmm-interp.profdata" "$PGO_DIR"/*.profraw > "$VERIFY_OUT/pgo-merge.log" 2>&1
+	fi
+	if [[ -f "$PGO_DIR/mdmm-interp.profdata" ]] \
+		&& perf_configure_build build/perf-interp-pgo -DDSP56K_FORCE_INTERPRETER=ON "${OPT[@]}" \
+			-DGEARMULATOR_MDMM_APPLE_PGO_MODE=use -DGEARMULATOR_MDMM_APPLE_PGO_PROFILE="$PGO_DIR/mdmm-interp.profdata"; then
+		verify perf.build.perf-interp-pgo PASS "trained on md+mm (train exit $(cat "$VERIFY_OUT"/pgo-train-md.rc)/$(cat "$VERIFY_OUT"/pgo-train-mm.rc))"
+	else
+		verify perf.build.perf-interp-pgo FAIL "profile merge or build failed, see pgo-merge.log / build-perf-interp-pgo.log"
+	fi
+
+	# measurements, one at a time
+	: > "$VERIFY_OUT/perf.tsv"
+	for model in "${MODELS[@]}"; do
+		perf_run jit build/mac-jit "$model"
+		perf_run plain build/mac-interp "$model"
+		perf_run opt build/perf-interp-opt "$model"
+		[[ -x build/perf-interp-pgo/source/elektron/md/mdLibTest/trigPressFirmwareTest ]] && perf_run pgo build/perf-interp-pgo "$model"
+	done
+
+	# synchronisation counts and host-time split (diagnostics build; its own timing overhead is excluded from rtf)
+	for model in "${MODELS[@]}"; do
+		log="$VERIFY_OUT/perf-diag-$model.log"
+		run_timeout 1800 "$log" build/perf-interp-diag/source/elektron/md/mdLibTest/trigPressFirmwareTest "$model"
+		dsp_hz=101606400
+		seconds="$(grep -m1 '^RENDER' "$log" | tr ' ' '\n' | sed -n 's/^frames=//p' | awk '{print $1/44100}')"
+		for p in coldfire_to_dsp0 coldfire_to_dsp1 dsp_to_dsp0 dsp_to_dsp1 inline_hdi08_dsp0 inline_hdi08_dsp1 background_dsp0 background_dsp1 background_uc; do
+			line="$(grep "^SYNC $p " "$log")"
+			per_s="$(sed -nE 's/.*per_s=([0-9]+).*/\1/p' <<< "$line")"
+			gap="$(awk -v p="$per_s" -v h="$dsp_hz" 'BEGIN{ if (p > 0) printf "%.0f", h/p; else print "-" }')"
+			verify "perf.sync.$model.$p" INFO "${per_s:-0}/s, mean gap ${gap} DSP cycles"
+		done
+		for d in 0 1; do verify "perf.sync.$model.link$d" INFO "$(grep "^SYNC link$d " "$log" | sed 's/^SYNC link[01] //')"; done
+		split="$(grep -m1 '^SPLIT' "$log")"
+		if [[ -n "$split" ]]; then
+			verify "perf.split.$model" INFO "$(sed -E 's/^SPLIT //; s/ bound=.*//; s/[a-z]+_ns=[0-9]+ //g' <<< "$split")"
+			verify "perf.bound.$model" PASS "threads <= $(sed -nE 's/.*bound=([0-9.]+).*/\1/p' <<< "$split")x (total host time / largest component)"
+		else
+			verify "perf.bound.$model" FAIL "no SPLIT line from the diagnostics build"
+		fi
+	done
+	verify_finish
+fi
 
 # ---------------------------------------------------------------- build
 build_engine()
