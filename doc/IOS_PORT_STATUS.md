@@ -635,3 +635,49 @@ Your screenshots, untethered, JIT through StikDebug. Full MM `trigPressFirmwareT
 - **The low numbers** (iPhone 0.07 at t ≤ 42 s, iPad `min_rtf` 0.057) **come from the boot phase.**
 - **Consequence for the 60 s test:** `min_rtf` must be taken over the 60 s after Play is pressed, not since launch. The meter has to restart its minimum at that point; a reset on the first transport/Play is the next change. Until then, the per-second `window_rtf` lines in `realtime.log` give the minimum over any chosen interval.
 - **Expectation for the JIT run:** the bench measured JIT/interpreter ≈ 4.6x on both devices, so the app should reach about 2.4–2.8x on the JIT, well above the 1.2 target. Not measured yet; it needs the StikDebug launch.
+
+### 2026-11-27: iOS MM app usability, round 1
+
+**Step 0: what the devices logged.**
+- **Your StikDebug run on the iPhone (old build):** the log read `engine=Interpreter`. But that build could lose the engine description (a static-initialisation-order bug), so the log could not be trusted.
+- **Speed in that run:** steady `window_rtf` about 0.1, with **13–17 audio callbacks per second**. 256-frame blocks at 48 kHz should give about 187.
+- **What that means:** each callback took about 10x longer than its audio, so callbacks arrived late. The emulator is clocked by them, so the tempo dropped and the audio broke up. **Slow tempo and missing sound were one bug: running below real time.**
+- **With the new diagnostics** (launched from the Mac, interpreter, auto-Play):
+
+| | iPhone 17 Pro Max | iPad Pro M4 |
+|---|---|---|
+| engine (reason) | interpreter (not debugged) | interpreter (**debugged=1, but StikDebug did not service the prepare request**) |
+| session | Playback, Speaker, 48 kHz, IO buffer 1024 | Playback, Speaker, 48 kHz, IO buffer 257 |
+| callbacks/s, block | 13–17, 256 | 86, 257 |
+| window rtf | 0.07–0.09 (first window 0.50) | 0.61 |
+| output peak after Play | **0.54** | **0.70** |
+
+**What this shows:**
+1. **Audio is produced and routed:** a nonzero output peak, the Speaker route, and the Playback category (the standalone now closes its input, so JUCE picks Playback; the silent switch does not mute it).
+2. **The JIT failure mode:** on the iPad a debugger was attached, but the handshake at load time came before StikDebug's script answered it. **Fix: retry for up to 5 s.** The bench and the probe did the handshake later and passed.
+3. **The iPhone's interpreter collapses from 0.50 to 0.08 once the editor is up.** The iPad stays at 0.61. Most likely iOS demotes the over-budget real-time audio thread and the UI then competes with it on the iPhone's 2 performance cores. The JIT (bench 2.45x on the iPhone) keeps the thread within budget. To be confirmed by your JIT run.
+4. **The meter** now restarts its minimum on each Play press (counted on the press only) and logs callbacks/s, block size, sample rate and peak.
+
+**Desktop options the iOS settings must expose** (checklist for the gear/settings view):
+- **Context menu (editor, right-click):**
+  - GUI Scale, Layout.
+  - MIDI Ports (Input, Output).
+  - Parameter links: "Parameter '…'", Parameter Links, Lock Regions, "Region '…'".
+  - Patch manager: Add to / Remove from, Export…, Export selected…, Export all…, Find similar Patches for parameter.
+  - MD/MM: **RAM recording**, **Performance diagnostics**.
+- **Settings › GUI (Monomachine):**
+  - Panel Feel: data entry encoder speed; drag and scroll rotary controls shown on the LCD.
+  - Panel Rendering: crisp LCD and panel lines (experimental).
+  - Machine Storage: Load Factory Storage…, Load Other Storage…, Restore Previous Storage, with the replace warning.
+- **Settings › Panel MIDI:**
+  - Source: Channel, Omni; Mode: Absolute, Button, Control, Encoder, Encoder push, Push, Trig.
+  - Learn, Learn all in order, Clear, Clear all, Starter map; "Last received".
+- **Settings › DSP/Audio:** Audio Input A/B; Open Audio/MIDI Settings….
+- **Settings › MIDI:**
+  - MIDI Ports (input/output).
+  - MIDI Routing Matrix (Host/Instrument/Controls/ports × message types), with presets: Default, Save, Save as…, Delete.
+  - Panic: Send "All Notes Off", Send "Note Off" for every Note.
+  - Reboot Device.
+- **Settings › Skins:** available skins (Activate, Export), Open skins folder; Developer Options (RmlUi debugger, reload via F5, MCP server, disable parameter tooltips).
+- **JUCE standalone menu:** Audio/MIDI Settings… (output device, sample rate, buffer size, MIDI inputs), Save current state…, Load a saved state…, Reset to default state.
+- **New for iOS:** engine badge and reason, Relaunch with JIT, interpreter warning, ROM import from Files with validation, a test tone, Bluetooth MIDI pairing.
