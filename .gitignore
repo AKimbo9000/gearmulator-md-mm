@@ -30,3 +30,6 @@ claude*.bat
 # python bytecode (scripts/perfhist.py)
 __pycache__/
 *.pyc
+roms/
+CLAUDE.local.md
+_to_delete/
