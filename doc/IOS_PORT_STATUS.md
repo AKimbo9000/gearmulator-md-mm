@@ -684,11 +684,14 @@ Your screenshots, untethered, JIT through StikDebug. Full MM `trigPressFirmwareT
 
 ### iOS MM app usability: where the goal stopped (2026-11-27)
 
-Turn count, from the session transcript:
-- **User-visible turns:** the `/goal` came at 2026-11-26 14:43:04 UTC. Since then there has been one context summary (14:58), your "continue" (21:33), and six stop-hook rounds (21:49 to 22:47). That is about 9 turns.
-- **Model responses:** 247 since the goal.
+**The goal reached its 30-turn limit.** Counted from the session transcript:
+- the turn started by the `/goal` (2026-11-26 14:43:04 UTC);
+- your one "continue" (21:33);
+- 28 stop-hook rounds (21:49 to 23:51 UTC).
 
-So whether the 30-turn fallback applies depends on which count the goal means. (An earlier version of this note said the limit was reached; that relied on the context summary's estimate of 23.)
+That makes 30 turns. (Earlier versions of this note said "about 9" and then 22, while the rounds were still adding up.)
+
+Between 22:47 and 23:51 the stop-hook rounds changed nothing: I checked the devices at 07:46, 08:49 and 08:51 KST, and a watcher ran for two 28-30 minute stretches. The iPhone stayed locked, and StikDebug never attached on the iPad.
 
 This file records what is done (rounds 1-4 below) and what is next. What is left needs you: see below.
 
