@@ -22,6 +22,7 @@
 #include "juce_audio_utils/juce_audio_utils.h"
 #include "juce_audio_plugin_client/Standalone/juce_StandaloneFilterWindow.h"
 
+#include <cstdlib>
 #include <thread>
 
 // jucePluginLib/processor.cpp (iOS real-time meter)
@@ -65,6 +66,43 @@ namespace mdJucePlugin
 			_change();
 			if(holder)
 				holder->startPlaying();
+		}
+
+		// Checks a ROM image (8 MiB, md::RomLoader fingerprint of this instrument's OS), copies it into the data folder's
+		// roms/ and restarts the device with it. _message says what happened.
+		bool importRomImage(const juce::MemoryBlock& _data, const juce::String& _name, juce::String& _message)
+		{
+			constexpr size_t romSize = 8 * 1024 * 1024;
+			auto* p = processor();
+			if(!p)
+			{
+				_message = "No instrument to import into.";
+				return false;
+			}
+			if(_data.getSize() != romSize)
+			{
+				_message = "\"" + _name + "\" is " + juce::String(static_cast<int64_t>(_data.getSize())) +
+					" bytes, not the 8 MiB (8,388,608 bytes) " + romName() + " image. Nothing was imported.";
+				return false;
+			}
+			const auto* bytes = static_cast<const uint8_t*>(_data.getData());
+			const std::vector<uint8_t> image(bytes, bytes + _data.getSize());
+			if(!md::RomLoader::isRomForModel(image, p->getModel()))
+			{
+				_message = "\"" + _name + "\" is 8 MiB but not " + romName() + " (fingerprint mismatch). Nothing was imported.";
+				return false;
+			}
+			const auto folder = juce::File(juce::String::fromUTF8(p->getDataFolder().c_str())).getChildFile("roms");
+			const auto target = folder.getChildFile(isMonomachine() ? "mm-os1.32b.bin" : "md-os1.63.bin");
+			if(!folder.createDirectory() || !target.replaceWithData(_data.getData(), _data.getSize()))
+			{
+				_message = "Could not write " + target.getFullPathName();
+				return false;
+			}
+			bool rebooted = false;
+			withAudioStopped([&] { rebooted = p->rebootDevice(); });
+			_message = romName() + " ROM imported" + (rebooted ? ", the device restarted with it." : ". Restart the app to use it.");
+			return true;
 		}
 
 		// wrapped text whose height follows the width
@@ -453,34 +491,10 @@ namespace mdJucePlugin
 
 			void acceptRom(const juce::MemoryBlock& _data, const juce::String& _name)
 			{
-				constexpr size_t romSize = 8 * 1024 * 1024;
-				auto* p = processor();
-				if(!p)
-					return;
-				if(_data.getSize() != romSize)
-				{
-					setStatus(m_romStatus, "\"" + _name + "\" is " + juce::String(static_cast<int64_t>(_data.getSize())) +
-						" bytes, not the 8 MiB (8,388,608 bytes) " + romName() + " image. Nothing was imported.", g_warn);
-					return;
-				}
-				const auto* bytes = static_cast<const uint8_t*>(_data.getData());
-				const std::vector<uint8_t> image(bytes, bytes + _data.getSize());
-				if(!md::RomLoader::isRomForModel(image, p->getModel()))
-				{
-					setStatus(m_romStatus, "\"" + _name + "\" is 8 MiB but not " + romName() + " (fingerprint mismatch). Nothing was imported.", g_warn);
-					return;
-				}
-				const auto folder = juce::File(juce::String::fromUTF8(p->getDataFolder().c_str())).getChildFile("roms");
-				const auto target = folder.getChildFile(isMonomachine() ? "mm-os1.32b.bin" : "md-os1.63.bin");
-				if(!folder.createDirectory() || !target.replaceWithData(_data.getData(), _data.getSize()))
-				{
-					setStatus(m_romStatus, "Could not write " + target.getFullPathName(), g_warn);
-					return;
-				}
-				bool rebooted = false;
-				withAudioStopped([&] { rebooted = p->rebootDevice(); });
+				juce::String message;
+				const bool imported = importRomImage(_data, _name, message);
 				updateRom();
-				setStatus(m_romStatus, romName() + " ROM imported" + (rebooted ? ", the device restarted with it." : ". Restart the app to use it."), g_good);
+				setStatus(m_romStatus, message, imported ? g_good : g_warn);
 			}
 
 			void resetToDefault()
@@ -580,6 +594,31 @@ namespace mdJucePlugin
 	void installIosSettingsSheet()
 	{
 		startJitWatcher();
+
+		// test hook: GEARMULATOR_IOS_IMPORT_TEST=<file>[:<file>...] (relative to Documents) imports each file as the
+		// Files picker would, after the app has started, and writes the verdicts to engine.log
+		if(const char* list = std::getenv("GEARMULATOR_IOS_IMPORT_TEST"))
+		{
+			const juce::String files(list);
+			tusEngine::log(("import test scheduled: " + files).toStdString());
+			std::thread([files]
+			{
+				std::this_thread::sleep_for(std::chrono::seconds(6));
+				juce::MessageManager::callAsync([files]
+				{
+				const auto docs = juce::File::getSpecialLocation(juce::File::userDocumentsDirectory);
+				for(const auto& rel : juce::StringArray::fromTokens(files, ":", ""))
+				{
+					const auto file = docs.getChildFile(rel);
+					juce::MemoryBlock data;
+					juce::String message = "unreadable";
+					const bool read = file.loadFileAsData(data);
+					const bool imported = read && importRomImage(data, file.getFileName(), message);
+					tusEngine::log(("import test " + rel + ": " + (imported ? "ACCEPTED " : "REJECTED ") + message).toStdString());
+				}
+				});
+			}).detach();
+		}
 		jucePluginEditorLib::g_iosOpenSettingsSheet = [](juce::Component& _window, std::function<void()> _openEditorSettings)
 		{
 			delete g_sheet.getComponent();

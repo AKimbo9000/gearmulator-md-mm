@@ -33,7 +33,7 @@ set(SOURCES
 	midiTranslator.cpp midiTranslator.h
 	midiTypes.h
 	os.cpp os.h
-	plugin.cpp plugin.h
+	plugin.cpp plugin.h pluginMutex.h
 	realtimeInstrumentation.cpp realtimeInstrumentation.h
 	performanceReport.cpp performanceReport.h
 	mameResamplers.cpp mameResamplers.h

@@ -8,6 +8,7 @@
 #include <utility>
 
 #include "midiTypes.h"
+#include "pluginMutex.h"
 #include "realtimeInstrumentation.h"
 #include "resamplerInOut.h"
 
@@ -148,7 +149,7 @@ namespace synthLib
 		SMidiEvent m_pendingSysexInput;
 
 		ResamplerInOut m_resampler;
-		mutable std::recursive_mutex m_lock;
+		mutable PluginMutex m_lock;
 		// addMidiEvent() takes m_lock while holding this one, so nothing may wait for this one while holding m_lock:
 		// whoever needs both takes them in one std::scoped_lock. Recursive because setDevice() does that and then
 		// calls setState(), which takes both again.
