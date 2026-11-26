@@ -114,7 +114,8 @@ namespace
 int main() try
 {
 	unsigned cases = 0;
-	for(unsigned engine = 0; engine < 5; ++engine)
+	// Engine 0 is the interpreter, 1-4 are JIT variants; a DSP56K_FORCE_INTERPRETER build has no JIT to run.
+	for(unsigned engine = 0; engine < (dsp56k::g_jitSupported ? 5u : 1u); ++engine)
 	{
 		Fixture fixture(engine);
 		for(const unsigned previous : {0u, 1u, 11259u})
