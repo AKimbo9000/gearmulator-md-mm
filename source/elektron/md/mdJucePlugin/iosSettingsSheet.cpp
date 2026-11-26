@@ -12,6 +12,9 @@
 
 #include "jucePluginEditorLib/pluginEditorWindow.h"
 
+#include "jucePluginLib/controller.h"
+#include "jucePluginLib/parameterlocking.h"
+
 #include "mdLib/mdromloader.h"
 
 #include "baseLib/filesystem.h"
@@ -310,9 +313,26 @@ namespace mdJucePlugin
 				text("Skin, GUI (panel feel, LCD rendering, machine storage), MIDI (ports, routing matrix, panic, reboot), "
 					"MIDI Learn, Panel MIDI, DSP & Audio and DSP Bridge: the desktop settings pages. On an iPhone they "
 					"are larger in landscape.");
-				text("Long-press the panel or a control for its context menu, the desktop right-click menu: GUI scale, "
-					"layout, MIDI ports, parameter links and region locks, the patch manager, RAM recording and "
-					"performance diagnostics.");
+				// --- the context menu's global entries (the desktop right-click menu); entries about one parameter
+				// (its links, its region, patch manager actions on a selection) stay on the long-press
+				heading("Panel menu");
+				text("Long-press the panel or a control for its context menu, the desktop right-click menu: parameter "
+					"links and the region of that control, the patch manager, MIDI ports and layout. Its global "
+					"entries are here as well:");
+				button("Unlock all parameter regions", [] { setAllRegionsLocked(false); });
+				button("Lock all parameter regions", [] { setAllRegionsLocked(true); });
+				m_diagButton = &button("Start performance capture", []
+				{
+					if(auto* p = processor())
+						p->setPerformanceDiagnosticsEnabled(!p->performanceDiagnosticsActive());
+				});
+				m_diagStatus = &text({});
+				if(!isMonomachine())
+				{
+					text("RAM recording (Machinedrum):", g_text);
+					m_ramComplete = &button("Complete tails (recommended)", [] { setRamRecording(md::RamRecordingMode::CompleteTail); });
+					m_ramOriginal = &button("Original finalization", [] { setRamRecording(md::RamRecordingMode::Original); });
+				}
 
 				// --- the standalone app's own menu
 				heading("State");
@@ -331,6 +351,29 @@ namespace mdJucePlugin
 
 			void timerCallback() override { update(); }
 
+			static void setAllRegionsLocked(const bool _lock)
+			{
+				auto* p = processor();
+				if(!p)
+					return;
+				auto& controller = p->getController();
+				const auto part = controller.getCurrentPart();
+				auto& locking = controller.getParameterLocking();
+				for(const auto& region : controller.getParameterDescriptions().getRegions())
+				{
+					if(_lock)
+						locking.lockRegion(part, region.first);
+					else
+						locking.unlockRegion(part, region.first);
+				}
+			}
+
+			static void setRamRecording(const md::RamRecordingMode _mode)
+			{
+				if(auto* p = processor())
+					p->setRamRecordingMode(_mode);
+			}
+
 			void update()
 			{
 				const bool jit = tusEngine::jitActive();
@@ -345,6 +388,21 @@ namespace mdJucePlugin
 					? juce::String::formatted("Below real time (%.2fx): the tempo slows down and the sound breaks up. Relaunch with JIT.", rtf)
 					: juce::String(), g_warn);
 				m_jitStatus->setText(g_jitStatusText, g_jitStatusColour);
+				if(auto* p = processor())
+				{
+					m_diagButton->setButtonText(p->performanceDiagnosticsActive() ? "Stop performance capture" : "Start performance capture");
+					m_diagStatus->setText(juce::String(p->performanceDiagnosticsStatus()) + " (Files app: " +
+						p->performanceDiagnosticsFolder().getFileName() + ")", g_secondary);
+					if(m_ramComplete && m_ramOriginal)
+					{
+						const bool available = p->isRamRecordingModeAvailable();
+						const auto mode = p->getRamRecordingMode();
+						m_ramComplete->setEnabled(available);
+						m_ramOriginal->setEnabled(available);
+						m_ramComplete->setToggleState(mode == md::RamRecordingMode::CompleteTail, juce::dontSendNotification);
+						m_ramOriginal->setToggleState(mode == md::RamRecordingMode::Original, juce::dontSendNotification);
+					}
+				}
 				m_jitButton->setEnabled(!jit);
 				m_jitButton->setButtonText(jit ? "JIT is running" : "Relaunch with JIT (StikDebug)");
 			}
@@ -458,6 +516,10 @@ namespace mdJucePlugin
 			TextBlock* m_jitStatus = nullptr;
 			TextBlock* m_romStatus = nullptr;
 			juce::TextButton* m_jitButton = nullptr;
+			juce::TextButton* m_diagButton = nullptr;
+			TextBlock* m_diagStatus = nullptr;
+			juce::TextButton* m_ramComplete = nullptr;
+			juce::TextButton* m_ramOriginal = nullptr;
 		};
 	}
 
