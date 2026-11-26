@@ -562,3 +562,28 @@ then `--target mmBenchIOS`.
 **Next:**
 1. Run MM Bench on both devices, JIT and interpreter (steps in `doc/JIT_SETUP.md`), and record hash and rtf here.
 2. If the device JIT hash matches `6adf0ea75100b8c3`, start Phase C (the standalone MM app with Files import and the engine badge) on the same runtime-engine build.
+
+### 2026-11-26 (late): MM Bench on both devices: JIT and interpreter PASS
+
+Your screenshots, untethered, JIT through StikDebug. Full MM `trigPressFirmwareTest` scenario, 37 s emulated, single run each.
+
+| device | engine | hash | vs expected | rtf | wall | JIT code |
+|---|---|---|---|---|---|---|
+| iPad Pro M4, iPadOS 27.0 | JIT | `6adf0ea75100b8c3` | **MATCH** | **2.75x** | 13.5 s | 386 KB |
+| iPad Pro M4, iPadOS 27.0 | interpreter | `0863f46b643b5555` | **MATCH** | 0.59x | 62.5 s | – |
+| iPhone 17 Pro Max, iOS 27.2.1 | JIT | `6adf0ea75100b8c3` | **MATCH** | **2.45x** | 15.1 s | 386 KB |
+| iPhone 17 Pro Max, iOS 27.2.1 | interpreter | `0863f46b643b5555` | **MATCH** | 0.53x | 70.4 s | – |
+
+**What this establishes:**
+- **The device JIT reproduces the desktop JIT exactly.**
+  - The final counters on both devices equal `doc/ios-baselines` (mixer 2996011515 instructions / 3718342491 cycles, producer 3014934202 / 3718360785), and so does the audio hash.
+  - The JIT code region works on TXM hardware with the real dual mapping, not only the Mac's single-mapping test.
+- **The interpreter is identical on device and Mac** (hash and counters).
+- **MM on the JIT runs well above real time on both devices:** 2.75x on the iPad, about equal to the Mac's 2.77x, and 2.45x on the iPhone.
+  - These are single cool runs, not sustained numbers. Even with the ×0.55–0.85 thermal derating from the earlier projection, both stay at 1.3x or more.
+- **MM on the interpreter is below real time:** 0.59x on the iPad, 0.53x on the iPhone. The device build was plain Release; OPTIMIZE_DSP+ThinLTO and PGO would add about 16% and 11% on top (Phase 2), which is still below real time.
+- **The JIT code peak is 386 KB on the devices**, against 350 KB on the Mac (same scenario). It is still about 2.4% of the 16 MiB region.
+
+**Small issue:** MM Bench's result label wraps the rtf as "x , JIT code …". Cosmetic; it gets fixed with the next rebuild.
+
+**Next:** Phase C, the standalone Monomachine app: the runtime-engine build, Files ROM import, the engine badge, and the scene lifecycle that iOS 27 requires. A sustained 60 s rtf run on both devices belongs in its `--selftest`.
