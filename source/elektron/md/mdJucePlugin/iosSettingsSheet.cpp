@@ -163,6 +163,15 @@ namespace mdJucePlugin
 		class Sheet;
 		juce::Component::SafePointer<Sheet> g_sheet;
 
+		// the JIT switch's progress, message thread only; shown by the sheet whenever it is open
+		juce::String g_jitStatusText;
+		juce::Colour g_jitStatusColour = g_secondary;
+		void setJitStatus(const juce::String& _text, const juce::Colour _colour)
+		{
+			g_jitStatusText = _text;
+			g_jitStatusColour = _colour;
+		}
+
 		class Sheet : public juce::Component, juce::Timer
 		{
 		public:
@@ -330,11 +339,12 @@ namespace mdJucePlugin
 
 				double rtf = 0, callbacks = 0, peak = 0;
 				tusRealtimeLast(rtf, callbacks, peak);
-				m_live->setText(rtf > 0 ? juce::String::formatted("Real time: %.2fx   audio callbacks: %.0f/s   output peak: %.2f", rtf, callbacks, peak)
+				m_live->setText(rtf > 0 ? juce::String::formatted("Real time: %.2fx   emulated blocks: %.0f/s   output peak: %.2f", rtf, callbacks, peak)
 				                       : juce::String("Real time: measuring..."), g_text);
 				m_warning->setText(!jit && rtf > 0 && rtf < 0.98
 					? juce::String::formatted("Below real time (%.2fx): the tempo slows down and the sound breaks up. Relaunch with JIT.", rtf)
 					: juce::String(), g_warn);
+				m_jitStatus->setText(g_jitStatusText, g_jitStatusColour);
 				m_jitButton->setEnabled(!jit);
 				m_jitButton->setButtonText(jit ? "JIT is running" : "Relaunch with JIT (StikDebug)");
 			}
@@ -350,46 +360,18 @@ namespace mdJucePlugin
 
 			// StikDebug attaches to this process; then the executable region is requested and the device recreated
 			// on the JIT, with the state carried over.
+			// StikDebug attaches to this process; the JIT watcher (startJitWatcher) then switches the engine
 			static void relaunchWithJit()
 			{
-				auto status = [](const juce::String& _text, const juce::Colour _colour)
+				setJitStatus("Opening StikDebug...", g_secondary);
+				tusEngine::requestJitFromStikDebug([](const bool _opened)
 				{
-					juce::MessageManager::callAsync([_text, _colour]
+					juce::MessageManager::callAsync([_opened]
 					{
-						if(g_sheet)
-							g_sheet->setStatus(g_sheet->jitStatus(), _text, _colour);
+						setJitStatus(_opened ? "Waiting for StikDebug to attach..."
+						                     : "StikDebug did not open. Is it installed? Or start this app from StikDebug.",
+							_opened ? g_secondary : g_warn);
 					});
-				};
-				status("Opening StikDebug...", g_secondary);
-				tusEngine::requestJitFromStikDebug([status](const bool _opened)
-				{
-					if(!_opened)
-					{
-						status("StikDebug did not open. Is it installed? Or start this app from StikDebug.", g_warn);
-						return;
-					}
-					std::thread([status]
-					{
-						// wait for StikDebug to attach (it brings itself to the front first)
-						for(int i = 0; i < 120 && !tusEngine::debugged(); ++i)
-							std::this_thread::sleep_for(std::chrono::milliseconds(500));
-						std::string reason;
-						if(!tusEngine::debugged() || !tusEngine::acquireJitRegion(reason))
-						{
-							status("JIT not enabled: " + juce::String(reason.empty() ? "StikDebug did not attach within 60 s" : reason), g_warn);
-							return;
-						}
-						juce::MessageManager::callAsync([status, reason]
-						{
-							auto* p = processor();
-							if(!p)
-								return;
-							bool rebooted = false;
-							withAudioStopped([&] { tusEngine::activateJit(); rebooted = p->rebootDevice(); });
-							status(rebooted ? "Switched to the JIT (" + juce::String(reason) + ")." : "JIT enabled, but the device did not restart.",
-								rebooted ? g_good : g_warn);
-						});
-					}).detach();
 				});
 			}
 
@@ -479,8 +461,57 @@ namespace mdJucePlugin
 		};
 	}
 
+	namespace
+	{
+		// JIT detection after launch. StikDebug can attach once the app runs (Relaunch with JIT, or its own Enable JIT on
+		// the running app), or attach at launch but answer the prepare request only after the load-time handshake gave
+		// up. Either way the DSPs move to the JIT: the region is requested, then the device is recreated with audio
+		// stopped (its state carries over). One attempt per attach.
+		void startJitWatcher()
+		{
+			static bool started = false;
+			if(started)
+				return;
+			started = true;
+			std::thread([]
+			{
+				bool tried = false;
+				while(!tusEngine::jitActive())
+				{
+					std::this_thread::sleep_for(std::chrono::milliseconds(500));
+					if(!tusEngine::debugged())
+					{
+						tried = false;
+						continue;
+					}
+					if(tried)
+						continue;
+					tried = true;
+					std::string reason;
+					if(!tusEngine::acquireJitRegion(reason))
+					{
+						juce::MessageManager::callAsync([reason] { setJitStatus("JIT not enabled: " + juce::String(reason), g_warn); });
+						continue;
+					}
+					juce::MessageManager::callAsync([reason]
+					{
+						auto* p = processor();
+						if(!p)
+							return;
+						bool rebooted = false;
+						withAudioStopped([&] { tusEngine::activateJit(); rebooted = p->rebootDevice(); });
+						setJitStatus(rebooted ? "Switched to the JIT (" + juce::String(reason) + ")." : "JIT enabled, but the device did not restart.",
+							rebooted ? g_good : g_warn);
+					});
+					return;
+				}
+			}).detach();
+		}
+	}
+
 	void installIosSettingsSheet()
 	{
+		startJitWatcher();
 		jucePluginEditorLib::g_iosOpenSettingsSheet = [](juce::Component& _window, std::function<void()> _openEditorSettings)
 		{
 			delete g_sheet.getComponent();
