@@ -461,3 +461,16 @@ The first real answer on whether the JIT route works on 27.0 (iPad) and 27.2.1 (
 - **To unblock, either:**
   - grant it (System Settings → Privacy & Security → Screen Recording → Claude) and ask again, and I place both files with iloader; or
   - use StikDebug's on-device pairing (Settings → Pair a Device), which works on iOS/iPadOS 27 (`doc/JIT_SETUP.md`, step 2).
+
+**JIT de-risking goal: stopped after the 25-turn limit (about 30 turns used), 2026-11-26.**
+- **Done:**
+  - `tools/jitprobe` built, development-signed, installed and running on the iPad and the iPhone, both waiting for a debugger.
+  - StikDebug built from source (`63713ea`), signed as `com.aki.stikdebug`, installed on both.
+  - `doc/JIT_SETUP.md` written.
+  - LocalDevVPN identified: App Store, Coxson Engineering.
+  - Pairing routes identified: on-device in StikDebug for iOS 27, or iloader on this Mac.
+- **Blocked on the user:**
+  1. Pairing files: grant the Claude app Screen Recording permission so iloader can be driven, or pair on each device in StikDebug.
+  2. Install LocalDevVPN on both devices.
+  3. Mount the disk image and enable JIT for JIT Probe. Only then can the probe run the handshake and the generated-code check and report PASS/FAIL.
+- **Next once unblocked:** read `Documents/jitprobe.log` from both devices; then Phase B if at least one device passes.
