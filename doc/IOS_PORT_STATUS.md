@@ -682,6 +682,80 @@ Your screenshots, untethered, JIT through StikDebug. Full MM `trigPressFirmwareT
 - **JUCE standalone menu:** Audio/MIDI Settings… (output device, sample rate, buffer size, MIDI inputs), Save current state…, Load a saved state…, Reset to default state.
 - **New for iOS:** engine badge and reason, Relaunch with JIT, interpreter warning, ROM import from Files with validation, a test tone, Bluetooth MIDI pairing.
 
+### iOS MM app usability, round 1: final state (2026-11-27)
+
+**Layout: done, and checked in Simulator screenshots on all four targets**
+
+| Target | Panel | Settings button |
+|---|---|---|
+| iPhone 17 Pro Max, portrait | fits | below the panel, clear of the Dynamic Island |
+| iPhone 17 Pro Max, landscape | fits | beside the panel |
+| iPad Pro 13, portrait | fits, centred | below the panel |
+| iPad Pro 13, landscape | fits, centred | below the panel |
+
+- The fix: the editor now fills the window on iOS (commit 0b433526). `EditorWindow::resized()` fits the panel into the safe area minus a strip for the button, beside or below, whichever keeps the panel larger.
+- Rotation refits the panel (rotated in the Simulator, checked by screenshot).
+- The firmware notice fits and is dismissed with its large "I Agree" button.
+- Long-press acts as right click (700 ms, under 12 px of movement).
+
+**Settings page: done (commit da4c96ce), checked in the iPhone Simulator in portrait**
+
+The Settings button opens a full-screen, scrollable page with touch-sized buttons. Screenshots confirm it fits, scrolls to the end, and closes with Done. Its sections:
+- **Engine:**
+  - badge (Interpreter or JIT) and the reason the engine was chosen;
+  - live real-time factor, callbacks/s and output peak;
+  - the below-real-time warning;
+  - Relaunch with JIT: opens StikDebug for this process (pid), then acquires the region and recreates the device on the JIT, with audio stopped. **Untested on a device.**
+- **Audio and MIDI:**
+  - JUCE's device selector (output, sample rate, buffer size, MIDI inputs, MIDI output);
+  - a 440 Hz test tone. Verified: the meter peak went from 0.00 to 0.25 in the Simulator;
+  - Bluetooth MIDI pairing (`NSBluetoothAlwaysUsageDescription` is in the plist).
+- **Firmware:** ROM status, and import from Files. The import checks for 8 MiB and the md::RomLoader fingerprint, copies the file to `<data folder>/roms/`, then reboots the device.
+- **Editor options:** opens the editor's own settings pages (the desktop Skin, GUI, MIDI, MIDI Learn, Panel MIDI, DSP & Audio and DSP Bridge pages), and explains the long-press context menu.
+- **State** (the JUCE standalone menu): Save, Load, Reboot, and Reset to default state.
+
+The desktop options checklist above is covered: the new page holds the iOS items and the standalone menu, the editor pages hold the desktop settings, and long-press opens the context menu. On an iPhone the editor pages are drawn inside the panel, so they are small in portrait and readable in landscape.
+
+**Audio on the device: nonzero output peak after Play, new build**
+- **iPad (interpreter):** the log line `play pressed: meter restarted` is followed by peaks of 0.77, 0.66, 0.66, 0.60, 0.38, 0.66 and 0.69. Playback category, Speaker, 48 kHz, 257-frame IO buffer, 86-87 callbacks/s, rtf 0.59-0.63.
+- **iPhone:** installed, but the launch was refused with RequestDenied (the phone was locked). The earlier build had a peak of 0.54 after Play.
+
+**New finding: the interpreter collapses to about 0.1x because the real-time audio thread is demoted**
+- **Evidence:**
+  - **Simulator (iPhone):** rtf fell from 0.58 to 0.08-0.12 at t=18 s. `ps -M` showed the thread doing the emulation at 84% CPU with priority **0T**, while the other audio thread stayed at 97R.
+  - **Stack sample:** 2429 of 2430 samples were inside `md::Hardware::advance` (DSP `execOp`, peripherals, microcontroller). No lock waits, so the emulation costs the same as before and simply gets a slower core.
+  - **Second iPad run:** 0.58 until t=18 s, then 0.05-0.08 (9-15 callbacks/s). The first iPad run held 0.59-0.63 for 82 s, so the demotion is intermittent.
+  - **The earlier iPhone collapse** (0.07-0.09) fits the same mechanism.
+- **Cause:** the whole emulation runs inside the real-time IO callback. On the interpreter it can never meet the callback's time budget (rtf < 1). The kernel's real-time fail-safe demotes such a thread to timeshare priority 0, which on Apple silicon means the efficiency cores, about 5x slower.
+- **Unaffected:** the JIT (2.45-2.75x) stays within the budget.
+- **Proposed fix** (host-side scheduling only; the emulated samples stay identical):
+  - in interpreter mode, run the device on a worker thread at `QOS_CLASS_USER_INTERACTIVE`, outside the real-time constraint;
+  - the IO callback takes finished blocks from a FIFO.
+  - That keeps the interpreter at its full ~0.6x instead of 0.1x. The tempo is still slow, since that is below real time, but the stutter is far milder.
+  - **Measure first:** whether synthLib already has a device thread or latency-block mechanism that could host this.
+
+**Next**
+1. **JIT on a device through StikDebug** (needs you, see below). Then read `Documents/realtime.log`: `engine=JIT`, window_rtf ≥ 1, about 187 callbacks/s (48 kHz, 256 frames), and a nonzero peak after Play.
+2. Interpreter mode: move the device off the real-time thread (proposal above). Verify that the Simulator no longer drops to priority 0T and that rtf stays at about 0.58.
+3. Make the editor's settings pages larger on an iPhone in portrait. Optional; landscape works.
+
+**To test by hand**
+- **iPhone JIT check.**
+  1. Unlock the iPhone and keep it unlocked.
+  2. Start LocalDevVPN, then open Gearmulator MM from StikDebug (doc/JIT_SETUP.md).
+  3. Open Settings: the badge should say "JIT (StikDebug)" and the real time should read about 2.4x.
+  4. Press Play: the tempo should be correct and the sound continuous.
+- **Relaunch with JIT.**
+  1. Launch the app normally (interpreter), tap Settings › Relaunch with JIT, and let StikDebug attach.
+  2. The status line should report "Switched to the JIT", and the badge should turn green.
+- **Test tone:** Settings › Play a test tone. You should hear a 2 s tone at 440 Hz. On the interpreter it may stutter, for the reason above.
+- **Long-press** a knob and the panel background: the context menu should open.
+- **Bluetooth MIDI:** Settings › Pair a Bluetooth MIDI device. A paired device should then appear under the MIDI inputs.
+- **ROM import:**
+  1. Settings › Import the ROM from Files, choosing a wrong file first: it should be refused with the reason.
+  2. Then choose the MM OS 1.32b image: it should be accepted and the device should restart.
+- **Rotate both devices:** the panel should refit and the button should never cover a control.
+
 ### iOS MM app usability, round 1: state at the usage-limit stop (2026-11-26)
 
 **Done and verified**
