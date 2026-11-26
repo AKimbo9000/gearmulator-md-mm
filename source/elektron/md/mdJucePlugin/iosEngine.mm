@@ -35,6 +35,13 @@ namespace
 
 // read by the real-time meter in jucePluginLib (plain pointers: constant-initialised, no order issue)
 extern uint32_t (*g_tusTransportCounter)();
+// jucePluginLib/processor.cpp: run the emulation off the real-time audio thread when this returns true
+extern bool (*g_tusOffloadProcessing)();
+namespace
+{
+	// the interpreter cannot meet the audio callback's deadline, and an overrunning real-time thread gets demoted
+	bool offloadWithInterpreter() { return !dsp56k::g_runtimeUseJIT; }
+}
 
 extern "C" const char* tusEngineDescription() { return g_engineDescription.load(); }
 
@@ -52,6 +59,7 @@ std::string tusAudioSessionDescription()
 __attribute__((constructor)) static void tusChooseEngine()
 {
 	g_tusTransportCounter = &playPresses;
+	g_tusOffloadProcessing = &offloadWithInterpreter;
 
 	const bool debugged = stikIsDebugged();
 	void* rx = nullptr;

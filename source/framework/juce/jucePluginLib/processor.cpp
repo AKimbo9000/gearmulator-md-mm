@@ -43,8 +43,11 @@ namespace synthLib
 #if JUCE_IOS
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstdio>
+#include <mutex>
 #include <thread>
+#include <pthread.h>
 extern "C" const char* tusEngineDescription();
 std::string tusAudioSessionDescription();
 uint32_t (*g_tusTransportCounter)() = nullptr;
@@ -52,6 +55,13 @@ uint32_t (*g_tusTransportCounter)() = nullptr;
 void tusRealtimeLast(double& _rtf, double& _callbacksPerSecond, double& _peak);
 // mixes a quiet 440 Hz tone into the output for _seconds (Settings > Audio > Test tone)
 void tusPlayTestTone(double _seconds);
+// set by the instrument: true when the emulation must not run on the real-time audio thread (the interpreter)
+bool (*g_tusOffloadProcessing)() = nullptr;
+namespace
+{
+	struct OffloadStats { bool active; uint64_t ioCallbacks; uint64_t ioUnderruns; };
+	OffloadStats offloadStats();
+}
 namespace
 {
 	// iOS real-time meter (PLAN.md Phase C): processing time of every audio block against its duration. A block whose
@@ -82,6 +92,7 @@ namespace
 				uint32_t lastPlay = g_tusTransportCounter ? g_tusTransportCounter() : 0;
 				double minRtf = 1e9;
 				uint64_t underrunsSincePlay = 0;
+				uint64_t lastIo = 0;
 				for(;;)
 				{
 					std::this_thread::sleep_for(std::chrono::seconds(1));
@@ -109,10 +120,13 @@ namespace
 					const uint32_t pb = peakBits.exchange(0);
 					float peak;
 					std::memcpy(&peak, &pb, sizeof(peak));
-					std::fprintf(f, "t=%llu window_rtf=%.3f min_rtf=%.3f callbacks_per_s=%llu avg_block=%.0f samplerate=%.0f peak=%.5f underruns=%llu underruns_since_play=%llu\n",
+					const auto off = offloadStats();
+					std::fprintf(f, "t=%llu window_rtf=%.3f min_rtf=%.3f callbacks_per_s=%llu avg_block=%.0f samplerate=%.0f peak=%.5f underruns=%llu underruns_since_play=%llu offload=%d io_callbacks_per_s=%llu io_underruns=%llu\n",
 						(unsigned long long)t, rtf, minRtf < 1e8 ? minRtf : 0.0, (unsigned long long)(b - lastBlocks),
 						b > lastBlocks ? double(sm - lastSamples) / double(b - lastBlocks) : 0.0, sampleRate.load(), peak,
-						(unsigned long long)u, (unsigned long long)underrunsSincePlay);
+						(unsigned long long)u, (unsigned long long)underrunsSincePlay, off.active ? 1 : 0,
+						(unsigned long long)(off.ioCallbacks - lastIo), (unsigned long long)off.ioUnderruns);
+					lastIo = off.ioCallbacks;
 					std::fflush(f);
 					lastRtf = rtf;
 					lastCallbacks = double(b - lastBlocks);
@@ -185,6 +199,175 @@ void tusPlayTestTone(const double _seconds)
 {
 	g_iosMeter.toneSeconds = _seconds;
 }
+
+namespace
+{
+	// iOS, interpreter: the emulation runs on a worker thread instead of the real-time audio thread. Below real time it
+	// overruns every callback, and the kernel's real-time fail-safe then demotes the audio thread to timeshare priority
+	// 0, the efficiency cores, about 5x slower (IOS_PORT_STATUS). Here the callback hands its MIDI to the worker and
+	// plays the samples the worker has finished, silence where there are none yet. The emulated samples are the same and
+	// play one block later. Started in prepareToPlay when the instrument asks for it; the JIT stays on the audio thread.
+	thread_local bool t_inOffloadWorker = false;
+
+	class IosOffload
+	{
+	public:
+		~IosOffload() { stop(); }
+
+		void start(juce::AudioProcessor& _processor, const int _channels, const int _maxBlock)
+		{
+			stop();
+			if(!g_tusOffloadProcessing || !g_tusOffloadProcessing())
+				return;
+			m_processor = &_processor;
+			m_channels = std::max(1, _channels);
+			m_maxBlock = std::max(32, _maxBlock);
+			const int capacity = m_maxBlock * 2;
+			m_ring.setSize(m_channels, capacity + 1);
+			m_ring.clear();
+			m_fifo.setTotalSize(capacity + 1);
+			m_fifo.reset();
+			m_work.setSize(m_channels, m_maxBlock);
+			for(auto* b : {&m_midiIn, &m_midiWork, &m_midiOut, &m_ioCarry})
+			{
+				b->clear();
+				b->ensureSize(16384);
+			}
+			m_ioBlock = 0;
+			m_quit = false;
+			m_paused = false;
+			m_active = true;
+			m_thread = std::thread([this] { run(); });
+		}
+
+		// waits for the block in progress; afterwards no emulation runs until start()
+		void stop()
+		{
+			m_active = false;
+			{
+				std::lock_guard l(m_mutex);
+				m_quit = true;
+			}
+			m_cv.notify_all();
+			if(m_thread.joinable())
+				m_thread.join();
+		}
+
+		bool active() const { return m_active; }
+
+		bool handleIO(juce::AudioBuffer<float>& _buffer, juce::MidiBuffer& _midi)
+		{
+			if(t_inOffloadWorker || !m_active)
+				return false;
+			++m_ioCallbacks;
+			const int n = _buffer.getNumSamples();
+			m_ioBlock = std::min(n, m_maxBlock);
+
+			// MIDI to the worker and the worker's MIDI output to the host; never wait for the worker here
+			if(m_mutex.try_lock())
+			{
+				m_midiIn.addEvents(m_ioCarry, 0, -1, 0);
+				m_ioCarry.clear();
+				m_midiIn.addEvents(_midi, 0, -1, 0);
+				_midi.swapWith(m_midiOut);
+				m_midiOut.clear();
+				m_mutex.unlock();
+			}
+			else
+			{
+				m_ioCarry.addEvents(_midi, 0, -1, 0);
+				_midi.clear();
+			}
+
+			const int avail = std::min(n, m_fifo.getNumReady());
+			int s1, n1, s2, n2;
+			m_fifo.prepareToRead(avail, s1, n1, s2, n2);
+			for(int c = 0; c < _buffer.getNumChannels(); ++c)
+			{
+				if(c >= m_channels)
+				{
+					_buffer.clear(c, 0, n);
+					continue;
+				}
+				if(n1 > 0)
+					_buffer.copyFrom(c, 0, m_ring, c, s1, n1);
+				if(n2 > 0)
+					_buffer.copyFrom(c, n1, m_ring, c, s2, n2);
+				if(avail < n)
+					_buffer.clear(c, avail, n - avail);
+			}
+			m_fifo.finishedRead(n1 + n2);
+			if(avail < n)
+				++m_ioUnderruns;
+			m_cv.notify_one();
+			return true;
+		}
+
+		OffloadStats stats() const { return {m_active.load(), m_ioCallbacks.load(), m_ioUnderruns.load()}; }
+
+	private:
+		void run()
+		{
+			pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
+			pthread_setname_np("TUS emulation");
+			t_inOffloadWorker = true;
+			for(;;)
+			{
+				int block = 0;
+				{
+					std::unique_lock l(m_mutex);
+					m_cv.wait_for(l, std::chrono::milliseconds(5), [this]
+					{
+						return m_quit || (m_ioBlock > 0 && m_fifo.getFreeSpace() >= m_ioBlock);
+					});
+					if(m_quit)
+						return;
+					block = m_ioBlock;
+					if(block <= 0 || m_fifo.getFreeSpace() < block)
+						continue;
+					m_midiWork.swapWith(m_midiIn);
+				}
+
+				m_work.setSize(m_channels, block, false, false, true);
+				m_work.clear();
+				m_processor->processBlock(m_work, m_midiWork);
+
+				int s1, n1, s2, n2;
+				m_fifo.prepareToWrite(block, s1, n1, s2, n2);
+				for(int c = 0; c < m_channels; ++c)
+				{
+					if(n1 > 0)
+						m_ring.copyFrom(c, s1, m_work, c, 0, n1);
+					if(n2 > 0)
+						m_ring.copyFrom(c, s2, m_work, c, n1, n2);
+				}
+				m_fifo.finishedWrite(n1 + n2);
+
+				std::lock_guard l(m_mutex);
+				m_midiOut.addEvents(m_midiWork, 0, -1, 0);
+				m_midiWork.clear();
+			}
+		}
+
+		juce::AudioProcessor* m_processor = nullptr;		// processBlock is public here, the override runs
+		int m_channels = 0;
+		int m_maxBlock = 0;
+		std::atomic<int> m_ioBlock{0};
+		std::atomic<bool> m_active{false};
+		bool m_quit = false;
+		bool m_paused = false;
+		std::mutex m_mutex;
+		std::condition_variable m_cv;
+		std::thread m_thread;
+		juce::AbstractFifo m_fifo{2};
+		juce::AudioBuffer<float> m_ring, m_work;
+		juce::MidiBuffer m_midiIn, m_midiWork, m_midiOut, m_ioCarry;
+		std::atomic<uint64_t> m_ioCallbacks{0}, m_ioUnderruns{0};
+	};
+	IosOffload g_iosOffload;
+
+	OffloadStats offloadStats() { return g_iosOffload.stats(); }
+}
 #endif
 
 namespace pluginLib
@@ -214,6 +397,9 @@ namespace pluginLib
 
 	Processor::~Processor()
 	{
+#if JUCE_IOS
+		g_iosOffload.stop();
+#endif
 		cancelPendingUpdate();
 		shutdown();
 		destroyController();
@@ -975,6 +1161,15 @@ namespace pluginLib
 	//==============================================================================
 	void Processor::prepareToPlay(double sampleRate, int samplesPerBlock)
 	{
+#if JUCE_IOS
+		g_iosOffload.stop();
+		const struct OffloadStart
+		{
+			Processor& p;
+			int block;
+			~OffloadStart() { g_iosOffload.start(p, std::max(p.getTotalNumInputChannels(), p.getTotalNumOutputChannels()), block); }
+		} offloadStart{*this, samplesPerBlock};
+#endif
 		// Use this method as the place to do any pre-playback
 		// initialisation that you need
 		m_hostSamplerate = static_cast<float>(sampleRate);
@@ -1049,6 +1244,9 @@ namespace pluginLib
 
 	void Processor::releaseResources()
 	{
+#if JUCE_IOS
+		g_iosOffload.stop();
+#endif
 		// When playback stops, you can use this as an opportunity to free up any
 		// spare memory, etc.
 	}
@@ -1130,6 +1328,8 @@ namespace pluginLib
 	void Processor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midiMessages)
 	{
 #if JUCE_IOS
+		if(g_iosOffload.handleIO(buffer, midiMessages))
+			return;
 		const IosMeterScope iosMeterScope(buffer, getSampleRate());
 #endif
 	    juce::ScopedNoDenormals noDenormals;
