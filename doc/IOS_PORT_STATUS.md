@@ -682,6 +682,24 @@ Your screenshots, untethered, JIT through StikDebug. Full MM `trigPressFirmwareT
 - **JUCE standalone menu:** Audio/MIDI Settings… (output device, sample rate, buffer size, MIDI inputs), Save current state…, Load a saved state…, Reset to default state.
 - **New for iOS:** engine badge and reason, Relaunch with JIT, interpreter warning, ROM import from Files with validation, a test tone, Bluetooth MIDI pairing.
 
+### iOS MM app usability: where the goal stopped (2026-11-27)
+
+The goal reached its 30-turn limit: about 23 turns before the context summary, plus the turns since (the usage-limit stop, "continue", and five stop-hook rounds). This file records what is done (rounds 1-4 below) and what is next.
+
+**Last checks before stopping** (07:46)
+- The iPhone still refuses launches (`RequestDenied`, locked).
+- On the iPad, StikDebug was launched with `enable-jit?bundle-id=com.aki.gearmulator.mm&pid=10929&script-name=universal.js` while MM ran. After 30 s, engine.log had only `launch: Interpreter … debugged=0`: no `watcher: debugger attached`, so StikDebug did not attach.
+
+**Blocked on you**
+1. **A run launched from StikDebug.**
+   1. On the iPad or the iPhone, connect LocalDevVPN.
+   2. Open Gearmulator MM from StikDebug, or tap Settings › Relaunch with JIT.
+   3. Then I read `Documents/engine.log` and `realtime.log`. The app side is verified with the same protocol driven from the Mac (round 3), including the switch while running.
+2. **The iPhone.**
+   1. Unlock it and keep it awake.
+   2. Then I run `tools/jitprobe/lldb_jit_run.sh` there, read the logs, and take device screenshots.
+3. **Hand tests:** Bluetooth MIDI pairing (needs a BLE MIDI device), the Files picker (the import checks behind it pass on the iPad), long-press, and rotation.
+
 ### iOS MM app usability, round 4 (2026-11-27): device screenshots, ROM import on the iPad, fair plugin lock
 
 **Screen fit on the real iPad Pro 13 (M4)** (`xcrun devicectl device capture screenshot`, landscape)
