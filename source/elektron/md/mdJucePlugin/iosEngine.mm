@@ -88,6 +88,7 @@ __attribute__((constructor)) static void tusChooseEngine()
 		std::snprintf(buf, sizeof(buf), "Interpreter (below real time) use_jit=0 debugged=%d reason=%s", debugged ? 1 : 0, reason.c_str());
 	}
 	setEngineDescription(buf);
+	tusEngine::log(std::string("launch: ") + buf);
 }
 
 namespace tusEngine
@@ -136,6 +137,17 @@ namespace tusEngine
 		std::snprintf(buf, sizeof(buf), "region=%p alias=%p 16MiB", rx, rw);
 		_reason = buf;
 		return true;
+	}
+
+	void log(const std::string& _line)
+	{
+		NSString* docs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
+		const std::string path = std::string(docs.UTF8String) + "/engine.log";
+		if(FILE* f = std::fopen(path.c_str(), "a"))
+		{
+			std::fprintf(f, "%.3f %s\n", [NSDate date].timeIntervalSince1970, _line.c_str());
+			std::fclose(f);
+		}
 	}
 
 	void activateJit()

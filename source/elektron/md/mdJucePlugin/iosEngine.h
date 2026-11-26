@@ -22,4 +22,7 @@ namespace tusEngine
 
 	// Switches new DSPs to the JIT. Only call it while no DSP runs (audio stopped), then recreate the device.
 	void activateJit();
+
+	// appends a timestamped line to Documents/engine.log (engine detection and switch steps)
+	void log(const std::string& _line);
 }

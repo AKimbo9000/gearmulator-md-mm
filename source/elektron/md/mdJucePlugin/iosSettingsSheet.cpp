@@ -549,22 +549,28 @@ namespace mdJucePlugin
 					if(tried)
 						continue;
 					tried = true;
+					tusEngine::log("watcher: debugger attached, requesting the region");
 					std::string reason;
-					if(!tusEngine::acquireJitRegion(reason))
+					const bool acquired = tusEngine::acquireJitRegion(reason);
+					tusEngine::log(std::string("watcher: region ") + (acquired ? "acquired, " : "not acquired, ") + reason);
+					if(!acquired)
 					{
 						juce::MessageManager::callAsync([reason] { setJitStatus("JIT not enabled: " + juce::String(reason), g_warn); });
 						continue;
 					}
-					juce::MessageManager::callAsync([reason]
+					const bool posted = juce::MessageManager::callAsync([reason]
 					{
 						auto* p = processor();
+						tusEngine::log(std::string("switch: on the message thread, processor ") + (p ? "found" : "MISSING"));
 						if(!p)
 							return;
 						bool rebooted = false;
 						withAudioStopped([&] { tusEngine::activateJit(); rebooted = p->rebootDevice(); });
+						tusEngine::log(std::string("switch: device ") + (rebooted ? "recreated on the JIT" : "NOT recreated"));
 						setJitStatus(rebooted ? "Switched to the JIT (" + juce::String(reason) + ")." : "JIT enabled, but the device did not restart.",
 							rebooted ? g_good : g_warn);
 					});
+					tusEngine::log(std::string("watcher: switch ") + (posted ? "posted to the message thread" : "NOT posted"));
 					return;
 				}
 			}).detach();
