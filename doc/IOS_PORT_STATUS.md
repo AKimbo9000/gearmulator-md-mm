@@ -682,6 +682,39 @@ Your screenshots, untethered, JIT through StikDebug. Full MM `trigPressFirmwareT
 - **JUCE standalone menu:** Audio/MIDI Settings… (output device, sample rate, buffer size, MIDI inputs), Save current state…, Load a saved state…, Reset to default state.
 - **New for iOS:** engine badge and reason, Relaunch with JIT, interpreter warning, ROM import from Files with validation, a test tone, Bluetooth MIDI pairing.
 
+### iOS MM app usability, round 2 (2026-11-27): the interpreter's collapse fixed, JIT after launch, panel menu
+
+**The slow-tempo/audio bug is fixed: the emulation no longer runs on the real-time thread** (commit 1ddf036c)
+- **Change:** with the interpreter, the audio callback hands its MIDI to a worker thread (`QOS_CLASS_USER_INTERACTIVE`, "TUS emulation") and plays the samples the worker has finished. The emulated samples are unchanged; they play one block later. The JIT keeps running on the audio thread.
+- **Simulator (iPhone 17 Pro Max), with Settings opened and scrolled:**
+  - rtf 0.57-0.63 for 60 s, against 0.58 → 0.08-0.12 before the fix;
+  - audio callbacks 94-95/s;
+  - output peak 0.64-0.96 after Play;
+  - `ps -M`: the worker at priority **47T** and 99% CPU; the IO threads at 97R using under 0.5% CPU. Before the fix the emulation thread sat at 0T.
+- **iPad, device:**
+  - rtf 0.57-0.61 for 70 s with no collapse;
+  - audio callbacks **187-188/s**, exactly the expected 48000/256 = 187.5 (86/s before the fix, when every callback overran);
+  - `play pressed: meter restarted`, then peaks of 0.65-0.89.
+- **Still to expect:** the interpreter is below real time, so the tempo stays at about 0.6x. The JIT is the fix for tempo.
+
+**JIT detection** (commit 994cd4b0)
+- **Change:** a watcher polls CS_DEBUGGED while the interpreter runs. When StikDebug attaches after launch, or attaches at launch but answers the prepare request late (the iPad's first StikDebug log said `debugged=1 reason=StikDebug did not service the prepare request`), the watcher requests the region and recreates the device on the JIT with audio stopped.
+  - Relaunch with JIT now only opens StikDebug.
+  - The log records `engine changed: ...`.
+- **What I tried from the Mac:** `devicectl` launched StikDebug (`com.aki.stikdebug` 3.2.2) on the iPad with `stikdebug://enable-jit?bundle-id=com.aki.gearmulator.mm&script-name=universal.js`, and again with `&pid=<MM pid>`. StikDebug launched both times but did not attach: no `engine changed` line after 20 s, MM still on the interpreter. Probably LocalDevVPN is off, or StikDebug is waiting for a confirmation on screen. This needs you at the device.
+
+**Settings: the context menu's global entries are now on the page** (commit 0e12d363)
+- Unlock all and Lock all parameter regions, Start/Stop performance capture with its status, and RAM recording for the MD.
+- Entries about one parameter stay on the long-press, as on the desktop's right-click: its links, its region, and patch manager actions on a selection.
+
+**Still open**
+- **Item (0), a run launched from StikDebug:**
+  1. On the iPad (or the iPhone, unlocked), connect LocalDevVPN.
+  2. Open Gearmulator MM from StikDebug, or tap Settings › Relaunch with JIT in the running app.
+  3. Tell me when it runs, and I will read `realtime.log`. Expected: `engine=JIT` or `engine changed: JIT`, offload=0, rtf ≥ 1, about 187 callbacks/s, and a nonzero peak after Play.
+- **iPhone:** the new build is installed, but launching from the Mac is refused while the phone is locked (RequestDenied).
+- **Not yet run on a device:** ROM import and Bluetooth pairing. Both are hand tests.
+
 ### iOS MM app usability, round 1: final state (2026-11-27)
 
 **Layout: done, and checked in Simulator screenshots on all four targets**
