@@ -681,3 +681,31 @@ Your screenshots, untethered, JIT through StikDebug. Full MM `trigPressFirmwareT
 - **Settings › Skins:** available skins (Activate, Export), Open skins folder; Developer Options (RmlUi debugger, reload via F5, MCP server, disable parameter tooltips).
 - **JUCE standalone menu:** Audio/MIDI Settings… (output device, sample rate, buffer size, MIDI inputs), Save current state…, Load a saved state…, Reset to default state.
 - **New for iOS:** engine badge and reason, Relaunch with JIT, interpreter warning, ROM import from Files with validation, a test tone, Bluetooth MIDI pairing.
+
+### iOS MM app usability, round 1: state at the usage-limit stop (2026-11-26)
+
+**Done and verified**
+- **Audio is produced on both devices.** Interpreter, Mac-launched, auto-Play. Output peak after Play: iPhone 0.54, iPad 0.70. Session category Playback, route Speaker, 48 kHz.
+- **The panel fits the safe area.** Simulator screenshots: iPhone 17 Pro Max landscape and iPad Pro 13 portrait. The panel is clear of the Dynamic Island and home indicator.
+- **The firmware notice fits on the iPhone and is dismissible by touch** (large "I Agree" button, seen in an earlier portrait screenshot).
+- **The JUCE "audio input muted" banner is gone.** The standalone closes its inputs and clears the feedback-loop flag.
+
+**Committed, not yet checked on a device**
+- **Long-press acts as right click** (700 ms, under 12 px of movement; skipped while the settings are open).
+- **Settings button** (opens the RmlUi settings).
+
+**Open issues found in the last screenshots**
+- **The Settings button overlaps the panel's top-right corner** (over the "DC IN" label) on both the iPhone (landscape) and the iPad (portrait). The cause: the `EditorWindow` is only the size of the panel, so the beside/below placement in `EditorWindow::resized()` never finds room and falls back to the corner. Likewise the iPad panel sits at the top of the screen instead of centred.
+  - **Fix:** have the standalone window give the editor the full screen bounds on iOS. The fit/centre code already handles a larger area.
+
+**Next**
+1. Make the editor fill the screen (fix above). Then take screenshots of the iPhone in portrait and the iPad in landscape; those two are not yet checked.
+2. Build and install `build/ios-mm` on both devices.
+3. **JIT check through StikDebug:** launch the app through StikDebug, then read `Documents/realtime.log`. Look for `engine=JIT`, window_rtf ≥ 1, about 187 callbacks/s, and a nonzero peak. The 5 s handshake retry is untested on a device.
+4. **Settings view contents** (goal item 3): engine badge and reason, Relaunch with JIT, interpreter warning, audio test tone, MIDI/BLE, ROM import. The checklist is above.
+
+**To test by hand**
+- Launch from StikDebug on the iPhone: is the tempo correct and the sound continuous?
+- Long-press a knob or the panel background: does the context menu open?
+- Tap Settings: do the settings pages open, scroll, and close by touch?
+- Rotate both devices: does the panel refit?

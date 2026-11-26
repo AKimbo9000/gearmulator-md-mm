@@ -1,5 +1,7 @@
 #pragma once
 
+#include <chrono>
+
 #include "parameterOverlays.h"
 #include "settingsDeviceSpecific.h"
 #include "skin.h"
@@ -220,6 +222,11 @@ namespace jucePluginEditorLib
 		static std::string getAbsoluteSkinFolder(const Processor& _processor, const std::string& _skinFolder);
 
 		void showSettings(bool _show);
+#if JUCE_IOS
+		std::chrono::steady_clock::time_point m_touchDownTime;
+		Rml::Vector2<float> m_touchDownPos{};
+		bool m_touchDownValid = false;
+#endif
 		bool settingsOpened() const { return m_settings != nullptr; }
 
 	protected:

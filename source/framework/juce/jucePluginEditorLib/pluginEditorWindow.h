@@ -59,5 +59,8 @@ namespace jucePluginEditorLib
 		float m_skinScale = 0.0f;
 
 		JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(EditorWindow)
+	#if JUCE_IOS
+		std::unique_ptr<juce::TextButton> m_gearButton;	// always visible on iOS: opens the settings
+#endif
 	};
 }

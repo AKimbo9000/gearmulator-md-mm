@@ -144,8 +144,41 @@ namespace jucePluginEditorLib
 				_event.StopPropagation();
 				if (!settingsOpened())
 					openMenu(_event);
+				return;
 			}
+#if JUCE_IOS
+			// remember the press so Mouseup can tell a long press from a tap or a drag
+			if (juceRmlUi::helper::getMouseButton(_event) == juceRmlUi::MouseButton::Left)
+			{
+				m_touchDownTime = std::chrono::steady_clock::now();
+				m_touchDownPos = juceRmlUi::helper::getMousePos(_event);
+				m_touchDownValid = true;
+			}
+#endif
 		});
+
+#if JUCE_IOS
+		// A touch is a plain left button, so isContextMenu() is never true on iOS: a long press (held 700 ms, moved
+		// less than 12 px) stands in for the right click. Not while the settings are open, where it would swallow taps.
+		juceRmlUi::EventListener::Add(doc, Rml::EventId::Mouseup, [this](Rml::Event& _event)
+		{
+			if (!m_touchDownValid)
+				return;
+			m_touchDownValid = false;
+			if (juceRmlUi::helper::getMouseButton(_event) != juceRmlUi::MouseButton::Left || settingsOpened())
+				return;
+			const auto held = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - m_touchDownTime).count();
+			if (held < 700)
+				return;
+			const auto pos = juceRmlUi::helper::getMousePos(_event);
+			const auto dx = pos.x - m_touchDownPos.x;
+			const auto dy = pos.y - m_touchDownPos.y;
+			if (dx * dx + dy * dy > 12.0f * 12.0f)
+				return;
+			_event.StopPropagation();
+			openMenu(_event);
+		});
+#endif
 
 		m_focusedParameter.reset(new FocusedParameter(getProcessor().getController(), *this));
 		m_midiPorts.reset(new MidiPorts(*this, getProcessor()));

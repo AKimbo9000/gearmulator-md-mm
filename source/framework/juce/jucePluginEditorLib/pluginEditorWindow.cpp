@@ -44,6 +44,17 @@ EditorWindow::EditorWindow(juce::AudioProcessor& _p, PluginEditorState& _s, juce
 	};
 
 	setUiRoot(m_state.getUiRoot());
+#if JUCE_IOS
+	// iOS has no right click: an always-visible gear opens the settings (the long press opens the context menu)
+	m_gearButton = std::make_unique<juce::TextButton>("Settings");
+	m_gearButton->setTooltip("Settings");
+	m_gearButton->onClick = [this]
+	{
+		if (auto* editor = m_state.getEditor())
+			editor->showSettings(!editor->settingsOpened());
+	};
+	addAndMakeVisible(*m_gearButton);
+#endif
 }
 
 EditorWindow::~EditorWindow()
@@ -55,6 +66,20 @@ EditorWindow::~EditorWindow()
 
 	setUiRoot(nullptr);
 }
+
+#if JUCE_IOS
+namespace
+{
+	// The part of the screen the panel may use: the display minus its safe-area insets (notch, Dynamic Island,
+	// home indicator). Rotation swaps it, so it is read whenever it is needed.
+	juce::Rectangle<int> iosSafeArea()
+	{
+		if (const auto* display = juce::Desktop::getInstance().getDisplays().getPrimaryDisplay())
+			return display->safeAreaInsets.subtractedFrom(display->totalArea);
+		return {};
+	}
+}
+#endif
 
 void EditorWindow::resized()
 {
@@ -87,8 +112,43 @@ void EditorWindow::resized()
 	if (std::abs(expected.x - w) > 1 || std::abs(expected.y - h) > 1)
 		m_skinScale = std::min(scaleX, scaleY);
 
+#if JUCE_IOS
+	// iOS (from charlesvestal/gearmulator 78ba807c, 2dc6f3dc): fit the fixed-aspect skin INSIDE the given bounds and
+	// centre it, instead of handing the editor raw bounds that are wider than the panel and clip it at one edge.
+	// The constraints are recomputed here because rotating the device swaps the screen bounds.
+	updateSizeConstrainer();
+	{
+		// the safe area of the screen, in our coordinates: clear of the notch, Dynamic Island and home indicator
+		const auto safe = getLocalArea(nullptr, iosSafeArea()).getIntersection(getLocalBounds());
+		const auto area = safe.isEmpty() ? getLocalBounds() : safe;
+		const auto fit = std::min(static_cast<float>(area.getWidth()) / static_cast<float>(m_state.getWidth()),
+		                          static_cast<float>(area.getHeight()) / static_cast<float>(m_state.getHeight()));
+		m_skinScale = fit;
+		const auto fitW = static_cast<int>(static_cast<float>(m_state.getWidth()) * fit);
+		const auto fitH = static_cast<int>(static_cast<float>(m_state.getHeight()) * fit);
+		if (!m_state.resizeEditor(fitW, fitH))
+			return;
+		if (auto* root = m_state.getUiRoot())
+			root->setTopLeftPosition(area.getX() + (area.getWidth() - fitW) / 2, area.getY() + (area.getHeight() - fitH) / 2);
+		if (m_gearButton)
+		{
+			// never on top of the panel: beside it (landscape), else below it (portrait), else in the corner
+			const int bw = 96, bh = 40;
+			const int panelRight = area.getX() + (area.getWidth() + fitW) / 2;
+			const int panelBottom = area.getY() + (area.getHeight() + fitH) / 2;
+			if (area.getRight() - panelRight >= bw + 8)
+				m_gearButton->setBounds(panelRight + (area.getRight() - panelRight - bw) / 2, area.getY() + 8, bw, bh);
+			else if (area.getBottom() - panelBottom >= bh + 8)
+				m_gearButton->setBounds(area.getRight() - bw - 8, panelBottom + 8, bw, bh);
+			else
+				m_gearButton->setBounds(area.getRight() - bw - 4, area.getY() + 4, bw, bh);
+			m_gearButton->toFront(false);
+		}
+	}
+#else
 	if (!m_state.resizeEditor(w,h))
 		return;
+#endif
 
 	// Any size that is too small ends up at the minimum, and hosts, window managers and display changes ask for those
 	// without the user doing anything. A size at the minimum therefore says nothing about the scale the user wants,
@@ -170,7 +230,18 @@ void EditorWindow::setGuiScale(const float _percent)
 	}
 	else
 	{
-		const auto size = getSizeForSkinScale(m_skinScale);
+		auto size = getSizeForSkinScale(m_skinScale);
+#if JUCE_IOS
+		// never ask for more room than the screen's safe area: an iOS view is clipped to it
+		const auto avail = getParentComponent() ? getParentComponent()->getLocalBounds() : iosSafeArea();
+		if (!avail.isEmpty() && size.x > 0 && size.y > 0)
+		{
+			const auto fit = std::min(static_cast<float>(avail.getWidth()) / static_cast<float>(size.x),
+			                          static_cast<float>(avail.getHeight()) / static_cast<float>(size.y));
+			if (fit < 1.0f)
+				size = {static_cast<int>(static_cast<float>(size.x) * fit), static_cast<int>(static_cast<float>(size.y) * fit)};
+		}
+#endif
 		setSize(size.x, size.y);
 	}
 
@@ -260,7 +331,17 @@ void EditorWindow::updateSizeConstrainer()
 	if (!isFreeWindowMode())
 	{
 		m_sizeConstrainer.setMinimumSize(m_state.getWidth() / 10, m_state.getHeight() / 10);
-		m_sizeConstrainer.setMaximumSize(m_state.getWidth() * 4, m_state.getHeight() * 4);
+		auto maxW = m_state.getWidth() * 4;
+		auto maxH = m_state.getHeight() * 4;
+#if JUCE_IOS
+		// a fixed aspect ratio with a 4x maximum grows the width past the screen edge; there is no window to drag
+		if (const auto safe = iosSafeArea(); !safe.isEmpty())
+		{
+			maxW = std::min(maxW, safe.getWidth());
+			maxH = std::min(maxH, safe.getHeight());
+		}
+#endif
+		m_sizeConstrainer.setMaximumSize(maxW, maxH);
 
 		m_sizeConstrainer.setFixedAspectRatio(static_cast<double>(m_state.getWidth()) / static_cast<double>(m_state.getHeight()));
 		return;
@@ -348,6 +429,10 @@ void EditorWindow::timerCallback()
 
 void EditorWindow::fixParentWindowSize() const
 {
+#if JUCE_IOS
+	// the parent chain ends at a view iOS sizes; growing it leaves the panel larger than the screen
+	return;
+#endif
 	const auto w = getWidth();
 	const auto h = getHeight();
 

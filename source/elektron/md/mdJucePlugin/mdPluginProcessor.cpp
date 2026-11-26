@@ -1307,6 +1307,9 @@ namespace mdJucePlugin
 				setup.inputChannels.clear();
 				setup.useDefaultInputChannels = false;
 				holder->deviceManager.setAudioDeviceSetup(setup, true);
+				// and drop JUCE's "Audio input is muted to avoid feedback loop" banner: there is no input any more
+				holder->processorHasPotentialFeedbackLoop = false;
+				holder->getMuteInputValue().setValue(false);
 				inputsClosed = true;
 			}
 		}
