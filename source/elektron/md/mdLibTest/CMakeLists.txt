@@ -314,6 +314,17 @@ set_tests_properties(mdEncoderPressFirmwareTest mmEncoderPressFirmwareTest PROPE
 	LABELS "Integration;FirmwareTest" SKIP_RETURN_CODE 77 TIMEOUT 300)
 set_property(TARGET encoderPressFirmwareTest PROPERTY FOLDER "Elektron/test")
 
+# Fixed headless scenario (boot, Trigger 1 press/hold/release) with a hash of the
+# raw DSP output words and per-DSP counters; scripts/verify-interp.sh compares it
+# between the JIT and interpreter builds.
+add_executable(trigPressFirmwareTest trigPressFirmwareTest.cpp)
+target_link_libraries(trigPressFirmwareTest PRIVATE mdLib)
+add_test(NAME mdTrigPressFirmwareTest COMMAND trigPressFirmwareTest md)
+add_test(NAME mmTrigPressFirmwareTest COMMAND trigPressFirmwareTest mm)
+set_tests_properties(mdTrigPressFirmwareTest mmTrigPressFirmwareTest PROPERTIES
+	LABELS "Integration;FirmwareTest" SKIP_RETURN_CODE 77 TIMEOUT 600)
+set_property(TARGET trigPressFirmwareTest PROPERTY FOLDER "Elektron/test")
+
 # Shared external regressions for the independent MM workaround removals.
 add_executable(mmAudioFirmwareTest mmAudioFirmwareTest.cpp)
 target_link_libraries(mmAudioFirmwareTest PRIVATE mdLib)
