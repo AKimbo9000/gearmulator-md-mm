@@ -21,6 +21,7 @@
 #include "mdLib/mddevice.h"
 #include "mdLib/mdromloader.h"
 #include "baseLib/filesystem.h"
+#include "dsp56kEmu/disasm.h"
 
 #include <algorithm>
 #include <array>
@@ -224,6 +225,26 @@ int main(const int _argc, char** _argv)
 			<< " wall_s=" << wall
 			<< " rtf=" << (wall > 0.0 ? emulated / wall : 0.0)
 			<< '\n';
+		// TRIGPRESS_DISASM=1: disassemble the code around each DSP's final PC, to name the loop it idles in
+		if(std::getenv("TRIGPRESS_DISASM"))
+		{
+			for(auto* dsp : {&mixer, &producer})
+			{
+				dsp56k::Disassembler disassembler(dsp->opcodes());
+				const auto pc = dsp->getPC().toWord();
+				const auto& mem = dsp->memory();
+				std::cout << "DISASM dsp" << (dsp == &mixer ? 0 : 1) << " pc=" << std::hex << pc << '\n';
+				for(dsp56k::TWord a = pc > 6 ? pc - 6 : 0; a < pc + 6;)
+				{
+					std::string line;
+					const auto len = disassembler.disassemble(line, mem.get(dsp56k::MemArea_P, a), mem.get(dsp56k::MemArea_P, a + 1),
+						dsp->regs().sr.var, dsp->regs().omr.var, a);
+					std::cout << "  " << (a == pc ? '>' : ' ') << std::hex << a << ": " << line << '\n';
+					a += len ? len : 1;
+				}
+				std::cout << std::dec;
+			}
+		}
 		if(!ready)
 		{
 			std::cerr << "boot incomplete after " << bootSeconds << " s\n";
