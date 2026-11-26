@@ -682,6 +682,60 @@ Your screenshots, untethered, JIT through StikDebug. Full MM `trigPressFirmwareT
 - **JUCE standalone menu:** Audio/MIDI Settings… (output device, sample rate, buffer size, MIDI inputs), Save current state…, Load a saved state…, Reset to default state.
 - **New for iOS:** engine badge and reason, Relaunch with JIT, interpreter warning, ROM import from Files with validation, a test tone, Bluetooth MIDI pairing.
 
+### iOS MM app usability, round 4 (2026-11-27): device screenshots, ROM import on the iPad, fair plugin lock
+
+**Screen fit on the real iPad Pro 13 (M4)** (`xcrun devicectl device capture screenshot`, landscape)
+- **Panel:** fits and is centred, with the Settings button below it. On the JIT the demo plays at **120.0 BPM** (the LCD shows "120.0", the play LED is on, and the step LEDs move).
+- **Feedback banner:** JUCE's "Audio input is muted to avoid feedback loop" banner had come back on the device after a launch held by the debugger. The input close ran only inside the 20 s startup-diagnostics window.
+  - **Fixed** (commit 0c89c406): the close now runs on every 250 ms tick, and the banner is gone in the next device screenshot.
+- **Settings page on the device:** opened with the test hook `GEARMULATOR_IOS_OPEN_SETTINGS=1`. It shows:
+  - the green "JIT (StikDebug)" badge and its reason;
+  - Real time 2.24x, 187 emulated blocks/s, output peak 0.87, and "JIT is running";
+  - iOS Audio, Speaker 1 + 2, 48000 Hz;
+  - MIDI inputs, plus JUCE's own "Bluetooth MIDI" button (present on the device, absent in the Simulator), and the MIDI output.
+- **Small issue:** the buffer-size box is blank on the device, because the session's 257-frame IO buffer is not one of JUCE's listed sizes.
+
+**ROM import, run on the iPad** (the same code as the Files picker, through `GEARMULATOR_IOS_IMPORT_TEST`; verdicts from engine.log)
+- `import-test/junk.bin` (1 KiB): **REJECTED**, "is 1024 bytes, not the 8 MiB (8,388,608 bytes) Monomachine OS 1.32b image".
+- `import-test/zero8m.bin` (8 MiB of zeros): **REJECTED**, "is 8 MiB but not Monomachine OS 1.32b (fingerprint mismatch)".
+- The installed MM OS 1.32b image: **ACCEPTED**, "imported, the device restarted with it".
+- The Files picker itself (UIDocumentPicker) still needs a hand test.
+
+**Fair plugin lock** (commit 08d30357)
+- **Problem:** the interpreter's worker took `synthLib::Plugin::m_lock` again right after each block. Darwin's first-fit mutex lets it do that ahead of waiting threads, so the message thread waited for seconds:
+  - the JIT switch ran 8.6 s late;
+  - a posted task did not run within 41 s;
+  - the import test never happened.
+- **Fix:** on iOS, `m_lock` is a recursive pthread mutex with `PTHREAD_MUTEX_POLICY_FAIRSHARE_NP` (`synthLib/pluginMutex.h`). The desktop keeps `std::recursive_mutex`.
+- **iPad after the fix:** the posted task ran on time (6.0 s as scheduled); interpreter rtf 0.57 and JIT rtf 2.25-2.27, both unchanged.
+
+**State of the goal's items**
+
+| Item | State | Evidence |
+|---|---|---|
+| (0) JIT run read from the plugged-in iPad | done | Debugger-launched from the Mac with StikDebug's protocol: `engine=JIT … serviced after 1 attempt(s)`, rtf 2.26, 187.5 callbacks/s, peak after Play. Late attach (switch while running) also works. StikDebug itself did not attach when launched from the Mac. |
+| (0) slow tempo and audio | fixed | Interpreter collapse (real-time thread demotion) fixed with the worker. The tempo is correct on the JIT. |
+| (1) sound | done | Playback category, Speaker, 48 kHz. Nonzero peaks after Play on the iPad (interpreter and JIT). |
+| (2) screen fit | done | Simulator: iPhone 17 Pro Max and iPad Pro 13, both orientations. Device: iPad screenshots of the panel and the settings page. |
+| (3) settings | done, except hand tests | The page, as above. ROM import verified on the iPad. Bluetooth pairing needs a BLE MIDI device and a hand. |
+| (4) meter restarts on Play | done | `play pressed: meter restarted` in every device log. |
+| iPhone device runs | blocked | The phone refuses launches while locked (`RequestDenied`). |
+
+**To test by hand**
+1. **iPhone:**
+   1. Unlock it.
+   2. Run `GEARMULATOR_MM_AUTOPLAY_SECONDS=12 tools/jitprobe/lldb_jit_run.sh 00008150-001621DC3C20401C DC6CC1DF-E0B7-5D6E-BE49-405EE9E19517 <out> 45`, or ask me to.
+   3. Then open the app normally and use it.
+2. **StikDebug:**
+   1. Connect LocalDevVPN.
+   2. Open Gearmulator MM from StikDebug, or tap Settings › Relaunch with JIT.
+   3. `Documents/engine.log` should say JIT. If the app dies with `EXC_BAD_ACCESS` code 0x32, StikDebug's prepare does not cover these pages.
+3. **Files picker:**
+   1. Tap Settings › Import the ROM from Files.
+   2. Choose a wrong file first, then the MM OS 1.32b image.
+4. **Bluetooth MIDI:** tap Settings › Pair a Bluetooth MIDI device (or JUCE's Bluetooth MIDI button), pair a device, and enable it under MIDI inputs.
+5. **Touch:** long-press a knob and the panel background (the context menu should open). Rotate both devices.
+
 ### iOS MM app usability, round 3 (2026-11-27): JIT run read from the iPad
 
 **Item (0): a JIT run, read from `Documents/realtime.log` on the plugged-in iPad Pro 13 (M4)**
