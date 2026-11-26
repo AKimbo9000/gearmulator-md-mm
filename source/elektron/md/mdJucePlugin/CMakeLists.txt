@@ -92,8 +92,8 @@ endforeach()
 
 # JUCE can populate bundle resources after its first ad-hoc signing pass on
 # macOS. Re-sign the completed VST3 and Standalone bundles so hosts and Finder
-# do not reject their final on-disk contents.
-if(APPLE)
+# do not reject their final on-disk contents. iOS bundles are signed by Xcode with the development team.
+if(APPLE AND NOT IOS)
 	foreach(plugin_target
 		mdJucePlugin_VST3 mmJucePlugin_VST3
 		mdJucePlugin_AU mmJucePlugin_AU
@@ -397,4 +397,13 @@ if(BUILD_TESTING)
 		SKIP_RETURN_CODE 77
 		TIMEOUT 600)
 	set_property(TARGET mdProjectStateRestoreTest PROPERTY FOLDER "Elektron/test")
+endif()
+
+# iOS 27 requires the scene lifecycle, which JUCE 7 lacks
+if(IOS)
+	foreach(t mdJucePlugin_Standalone mmJucePlugin_Standalone)
+		if(TARGET ${t})
+			target_sources(${t} PRIVATE iosSceneShim.mm)
+		endif()
+	endforeach()
 endif()

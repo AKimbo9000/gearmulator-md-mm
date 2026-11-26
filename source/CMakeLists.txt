@@ -61,7 +61,17 @@ if(${CMAKE_PROJECT_NAME}_BUILD_JUCEPLUGIN)
 	# inherits them by linking one of those two
 	set(JUCE_MODULES_DIR ${CMAKE_CURRENT_LIST_DIR}/3rdparty/JUCE/modules)
 
+	# JUCE builds juceaide, a macOS host tool, at configure time with CMAKE_OSX_DEPLOYMENT_TARGET. An iOS target
+	# (Xcode 27 accepts 15.0 or later) is not valid for it: JUCE 7 uses CGWindowListCreateImage, obsoleted in macOS
+	# 15. Give the JUCE directory a macOS-valid value and restore the iOS one for everything else.
+	if(IOS)
+		set(tusIosDeploymentTarget ${CMAKE_OSX_DEPLOYMENT_TARGET})
+		set(CMAKE_OSX_DEPLOYMENT_TARGET 14.0)
+	endif()
 	add_subdirectory(3rdparty/JUCE EXCLUDE_FROM_ALL)
+	if(IOS)
+		set(CMAKE_OSX_DEPLOYMENT_TARGET ${tusIosDeploymentTarget})
+	endif()
 	if(${CMAKE_PROJECT_NAME}_BUILD_JUCEPLUGIN_CLAP)
 		add_subdirectory(3rdparty/clap-juce-extensions)
 	endif()

@@ -16,6 +16,17 @@ option(${CMAKE_PROJECT_NAME}_BUILD_JUCEPLUGIN_CLAP "Build CLAP version of Juce p
 option(${CMAKE_PROJECT_NAME}_BUILD_JUCEPLUGIN_LV2 "Build LV2 version of Juce plugins" off)
 option(${CMAKE_PROJECT_NAME}_BUILD_JUCEPLUGIN_AU "Build AU version of Juce plugins" on)
 option(${CMAKE_PROJECT_NAME}_BUILD_JUCEPLUGIN_Standalone "Build Standalone version of Juce plugins" off)
+option(${CMAKE_PROJECT_NAME}_BUILD_JUCEPLUGIN_AUV3 "Build AUv3 version of Juce plugins" off)
+
+# iOS/iPadOS hosts only load AUv3, and an AUv3 ships INSIDE a host app -- the
+# Standalone target is that app, so the two are one choice, not two.
+if(IOS)
+	# The standalone app comes first (PLAN.md Phase C); AUv3 is opt-in until Phase 6
+	set(${CMAKE_PROJECT_NAME}_BUILD_JUCEPLUGIN_Standalone ON CACHE BOOL "" FORCE)
+	foreach(f VST2 VST3 CLAP LV2 AU)
+		set(${CMAKE_PROJECT_NAME}_BUILD_JUCEPLUGIN_${f} OFF CACHE BOOL "" FORCE)
+	endforeach()
+endif()
 
 set(USE_CLAP ${${CMAKE_PROJECT_NAME}_BUILD_JUCEPLUGIN_CLAP})
 set(USE_LV2 ${${CMAKE_PROJECT_NAME}_BUILD_JUCEPLUGIN_LV2})
@@ -30,6 +41,15 @@ if(NOT TUS_CAN_RUN_BUILT_BINARIES)
 endif()
 
 set(JUCE_CMAKE_DIR ${CMAKE_CURRENT_LIST_DIR})
+
+# An iOS build produces bundles with the same NAMES as the macOS ones but a
+# different layout (flat, not Contents/); writing both into bin/plugins merges
+# an iOS .app into a macOS one. Give each platform its own folder.
+if(IOS)
+	set(TUS_PRODUCTS_SUFFIX "-ios")
+else()
+	set(TUS_PRODUCTS_SUFFIX "")
+endif()
 
 set(juce_formats "")
 set(plugin_formats "")
@@ -66,6 +86,13 @@ if(USE_CLAP)
     list(APPEND plugin_formats CLAP)
 	add_custom_target(PluginFormat_CLAP)
 	set_property(TARGET PluginFormat_CLAP PROPERTY FOLDER CustomTargets)
+endif()
+
+if(${CMAKE_PROJECT_NAME}_BUILD_JUCEPLUGIN_AUV3)
+    list(APPEND juce_formats AUv3)
+    list(APPEND plugin_formats AUv3)
+	add_custom_target(PluginFormat_AUv3)
+	set_property(TARGET PluginFormat_AUv3 PROPERTY FOLDER CustomTargets)
 endif()
 
 if(USE_Standalone)
@@ -150,6 +177,14 @@ macro(removeJuceDependencies targetName)
 	set_target_properties(${targetName} PROPERTIES INTERFACE_LINK_LIBRARIES "${pluginLibs}")
 endmacro()
 
+# iOS: scene lifecycle (required by iOS 27, see elektron/md/mdJucePlugin/iosSceneShim.mm) and Files app access to
+# Documents, where firmware images are imported
+if(IOS)
+	set(TUS_IOS_PLIST_ARGS PLIST_TO_MERGE "<plist><dict><key>UIApplicationSceneManifest</key><dict><key>UIApplicationSupportsMultipleScenes</key><false/><key>UISceneConfigurations</key><dict><key>UIWindowSceneSessionRoleApplication</key><array><dict><key>UISceneConfigurationName</key><string>Default</string><key>UISceneDelegateClassName</key><string>TusSceneDelegate</string></dict></array></dict></dict><key>UIFileSharingEnabled</key><true/><key>LSSupportsOpeningDocumentsInPlace</key><true/></dict></plist>")
+else()
+	set(TUS_IOS_PLIST_ARGS "")
+endif()
+
 macro(createJucePlugin targetName productName isSynth plugin4CC binaryDataProject synthLibProject)
 	set(gmProductName "${productName}")
 	set(gmPlugin4CC "${plugin4CC}")
@@ -160,6 +195,12 @@ macro(createJucePlugin targetName productName isSynth plugin4CC binaryDataProjec
 		set(gmPlugin4CC "Z${gmPlugin4CCTail}")
 	endif()
 	string(REPLACE " " "" productNameIdentifier "${gmProductName}")
+	# <targetName>_BUNDLE_ID overrides the bundle identifier, e.g. for an iOS build signed with your own team
+	if(DEFINED ${targetName}_BUNDLE_ID AND NOT "${${targetName}_BUNDLE_ID}" STREQUAL "")
+		set(tusBundleId "${${targetName}_BUNDLE_ID}")
+	else()
+		set(tusBundleId "local.gearmulator.preview.${productNameIdentifier}")
+	endif()
 	juce_add_plugin(${targetName}
 		# VERSION ...                                     # Set this if the plugin version is different to the project version
 		# ICON_BIG ...                                    # ICON_* arguments specify a path to an image file to use as an icon for the Standalone
@@ -183,7 +224,8 @@ macro(createJucePlugin targetName productName isSynth plugin4CC binaryDataProjec
 		VST3_AUTO_MANIFEST ${TUS_CAN_RUN_BUILT_BINARIES}  # While generating a moduleinfo.json is nice, Juce does not properly package using cpack on Win/Linux
 		                                                  # and completely fails on Linux if we change the suffix to .vst3, so we skip that completely for now
 		                                                  # Writing it loads the plugin just built, a cross build goes without
-		BUNDLE_ID "local.gearmulator.preview.${productNameIdentifier}"
+		BUNDLE_ID "${tusBundleId}"
+		${TUS_IOS_PLIST_ARGS}
 		LV2URI "http://theusualsuspects.lv2/${productNameIdentifier}"
 	)
 

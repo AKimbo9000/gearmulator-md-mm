@@ -72,11 +72,15 @@ if(NOT EMSCRIPTEN)
 	add_subdirectory(cpp-terminal EXCLUDE_FROM_ALL)
 
 	if(NOT ANDROID)
-		add_subdirectory(portmidi EXCLUDE_FROM_ALL)
+		if(NOT IOS)	# desktop audio/MIDI hosts only
+			add_subdirectory(portmidi EXCLUDE_FROM_ALL)
+		endif()
 	endif()
 
 	set(PA_USE_ASIO OFF CACHE BOOL "" FORCE)
-	add_subdirectory(portaudio EXCLUDE_FROM_ALL)
+	if(NOT IOS)	# desktop audio/MIDI hosts only
+		add_subdirectory(portaudio EXCLUDE_FROM_ALL)
+	endif()
 
 	# Virtual MIDI ports require the newer PortMidi API. Its target name differs from
 	# Vavra's portmidi-static, so both versions can coexist.
@@ -86,7 +90,9 @@ if(NOT EMSCRIPTEN)
 		# Build static even if a parent set BUILD_SHARED_LIBS ON.
 		set(_pm_prev_shared ${BUILD_SHARED_LIBS})
 		set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
-		add_subdirectory(portmidi-latest EXCLUDE_FROM_ALL)
+		if(NOT IOS)	# desktop audio/MIDI hosts only
+			add_subdirectory(portmidi-latest EXCLUDE_FROM_ALL)
+		endif()
 		set(BUILD_SHARED_LIBS ${_pm_prev_shared} CACHE BOOL "" FORCE)
 	endif()
 endif()
