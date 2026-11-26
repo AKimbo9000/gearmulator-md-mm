@@ -122,3 +122,36 @@ produced it.
 2. The block-shaped interpreter (PLAN.md 1b), for the stop-point and interrupt-granularity differences that remain once the cycle charge agrees.
 3. A unit test for the iterative DO loops (slices, nested loops sharing LA, two-word end, RTI into LA+1). It is not written yet; the existing suites and firmware runs pass.
 4. The full `scripts/verify-interp.sh` compare run started at 20:20 (`build/verify/verify-interp/20261126-202024`, including ctest for both engines). Its result was not in yet when this was written.
+
+### 2026-11-26: MM cycle drift, MM interpreter ctests, ctest parsing (25-turn goal)
+
+**Full compare run** (`build/verify/verify-interp/20261126-202024`, before this goal):
+- `jit.unchanged` PASS for MD and MM.
+- MD and MM renders: MISMATCH on counters. The MD hash matches.
+- JIT ctest: 89/89 passed, but it was reported FAIL because of the parser bug fixed below.
+- Interpreter ctest: 86/89. `mmSineFirmwareTest` and `mmSineMidiFirmwareTest` fail; `mmDigiproFirmwareTest` timed out at 600 s.
+
+**Fixed and committed:**
+- `verify-interp.sh` now parses ctest's all-passed summary (`100% tests passed out of 89`) as well as the failed form. Checked against both summary lines.
+- `DSP::fastForward()` counts calls and skipped instructions; `trigPressFirmwareTest` prints them as `ff0=` / `ff1=`. Diagnostic only; JIT renders and counters are unchanged.
+
+**MM DO-loop cycle drift: cause found, not fixed yet.**
+- Per-instruction cycles are identical in both engines. Both call `calcCycles(inst, pc, op, bridged, 1)`, and the interpreter's per-PC cycle cache is invalidated on P writes. So `getOpcodeCycles` is not the cause.
+- The cause is the JIT's serial-status spin skip. `jitops_jmp.cpp` `skipToFrameSync` fast-forwards a poll of an ESSI/ESAI status flag that branches to itself with `fastForward(n, n)`: n instructions and n cycles, which its own TODO notes. The interpreter runs the spin for real at its true cycle cost.
+- In 3 s (`--boot-seconds 3`), the JIT fast-forwards 53,655 times (13.3M instructions) on the MD mixer, and 441,313 times (15.0M instructions) on the MM mixer and 505,788 times (22.4M instructions) on the MM producer. The interpreter fast-forwards 0 times.
+- That matches the drift: equal cycles at every checkpoint, fewer instructions in the interpreter. At the end of the MM run the gap is −10.66M (mixer) and −10.81M (producer).
+- A mirror of the skip is committed in dsp56300 (`serialStatusSpin` / `btstSerialStatusSpin`, hooked into `op_Jclr_qq`, `op_Jset_qq`, `op_Brclr_qq`, `op_Brset_qq`, `op_Btst_qq` and absolute `op_Btst_ea`; dispatch does reach those). **It never fires: 0 calls.** One of its match conditions fails on the real firmware loops.
+
+**Interpreter ctests, not fixed:**
+- `mmDigiproFirmwareTest` takes 149.8 s under the JIT, so at the interpreter's 0.3–0.5× it needs about 300–500 s. It timed out at 600 s while 4 tests ran in parallel. A slow run, not a hang.
+- `mmSineFirmwareTest` / `mmSineMidiFirmwareTest` fail with `GND SIN waveform failed smoothness/pitch-scale check` (track RMS 0.118, roughness 0.00129). The interpreter run logs 54,972 `HOTX is full` overwrites against 0 for the JIT in this test. They probably share the MM divergence above.
+
+**Closest state:** MD audio is bit-identical to the JIT. MM is not: `503bd8af7d1bb400` against `6adf0ea75100b8c3`, first divergence at checkpoint 3 (0.75 s, producer 3 instructions and 6 cycles behind). `jit.unchanged` PASS. Interpreter ctest 86/89.
+
+**Next step:**
+1. Log PC, opcode and n at each JIT `fastForward` call on MM, for example by building `trigPressFirmwareTest` against the JIT with a temporary print. Compare that against the conditions in `DSP::serialStatusSpin` / `btstSerialStatusSpin` to find which one fails. Candidates:
+   - the extension-word read (`mem.get(P, pc+1)`) differs from the JIT's `m_opWordB`;
+   - the spin form the firmware uses is one the mirror doesn't cover;
+   - an MD block-link `spinSkip` or `nopLoopSkip` path, which also calls `fastForward`.
+2. Once the mirror fires with the JIT's n, re-run `verify-interp.sh`. MM's counters and hash should then match, and probably the sine tests too.
+3. Give `mmDigiproFirmwareTest` a timeout that fits interpreter builds, or run the interpreter ctest with less parallelism.

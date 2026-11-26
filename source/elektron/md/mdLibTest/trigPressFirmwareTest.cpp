@@ -222,6 +222,8 @@ int main(const int _argc, char** _argv)
 			<< " dsp0_cycles=" << mixer.getCycles()
 			<< " dsp1_instr=" << producer.getInstructionCounter()
 			<< " dsp1_cycles=" << producer.getCycles()
+			<< " ff0=" << mixer.getFastForwardCalls() << "/" << mixer.getFastForwardInstructions()
+			<< " ff1=" << producer.getFastForwardCalls() << "/" << producer.getFastForwardInstructions()
 			<< " wall_s=" << wall
 			<< " rtf=" << (wall > 0.0 ? emulated / wall : 0.0)
 			<< '\n';

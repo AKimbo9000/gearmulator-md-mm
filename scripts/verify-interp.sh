@@ -102,10 +102,12 @@ report_ctest()
 {
 	local engine="$1" rc summary
 	rc="$(cat "$VERIFY_OUT/ctest-$engine.rc" 2>/dev/null || echo 255)"
-	summary="$(grep -E 'tests passed, [0-9]+ tests failed out of [0-9]+' "$VERIFY_OUT/ctest-$engine.log" | tail -1)"
+	# "100% tests passed out of 89" when none failed, "97% tests passed, 3 tests failed out of 89" otherwise
+	summary="$(grep -E 'tests passed(, [0-9]+ tests failed)? out of [0-9]+' "$VERIFY_OUT/ctest-$engine.log" | tail -1)"
 	local total failed
 	total="$(sed -nE 's/.*out of ([0-9]+).*/\1/p' <<< "$summary")"
 	failed="$(sed -nE 's/.*passed, ([0-9]+) tests failed.*/\1/p' <<< "$summary")"
+	[[ -n "$summary" && -z "$failed" ]] && failed=0
 	if [[ $rc == 0 && -n "$total" && "$failed" == 0 ]]; then
 		verify "ctest.mdLib.$engine" PASS "$total/$total (GEARMULATOR_REQUIRE_FIRMWARE_TESTS=1)"
 	else
