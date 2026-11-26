@@ -342,3 +342,63 @@ None of these is Apple documentation.
    - A "Relaunch with JIT" button that opens StikDebug's URL when `stikdebug` can be opened.
    - The same facts go into the self-test JSON, so a device run records which engine it measured.
 5. **The same results either way.** The iOS JIT generates the same arm64 code as the desktop JIT, so it reproduces `doc/ios-baselines` exactly. A self-test hash on the device checks that. The interpreter matches the JIT for MD audio but not yet for MM (see the Phase 1 entries), which is another reason to prefer the JIT whenever it works.
+
+### Step 0: devices
+
+- **iPhone 17 Pro Max:** connected by cable, tunnel up, **Developer Mode enabled**, iOS 27.2.1. Its CoreDevice UUID and UDID are in `CLAUDE.local.md`.
+- **iPad:** the CoreDevice UUID in `CLAUDE.local.md` had been the UDID; corrected.
+
+### Step 3: MM interpreter profile and two speedups
+
+**Profile.**
+- **Setup:** `sample`, 15 s of steady-state MM after the 25 s boot. Build: `build/perf-interp-opt` (OPTIMIZE_DSP+ThinLTO). About 15,000 samples on the one emulation thread.
+- **Tooling note:** `sample` has to run outside the command sandbox, which hides `task_for_pid`.
+
+Self time, top of stack:
+
+| rank | function | samples | share |
+|---|---|---|---|
+| 1 | `md::Hardware::advance` (scheduler, with `execInterpreter`/`execUntilCycles` inlined) | 2635 | ~18% |
+| 2 | `DSP::processLoopActivations` (the per-instruction DO-loop step) | 1247 | ~8% |
+| 3 | `DSP::alu_multiply` | 917 | ~6% |
+| 4 | `DSP::op_Parallel` | 900 | ~6% |
+| 5 | `dspExecPeripherals<Peripherals56303, …>` (indirect call per instruction) | 802 | ~5% |
+| 6 | `Memory::get` | 459 | ~3% |
+| 7–10 | `decode_ddddd_write`, `decode_XMove_MMRRR`, `op_Mover`, `m68k_execute_run` (ColdFire) | 190–300 each | 1–2% each |
+
+The rest is spread over opcode handlers, `EsxiClock::exec`, DMA and HDI08. There is no single dominant cost after dispatch.
+
+**Prototyped and committed** (dsp56300):
+1. Test `isDue()` inline before the peripheral callback, as `execJitImpl<true>` does.
+2. Call `processLoopActivations()` only when it can act: the instruction ends at LA, a loop end is pending, or the frame was popped.
+
+Both are the same work in the same order.
+
+**Verified:**
+- MD and MM interpreter renders and **every counter checkpoint identical** to the interpreter before the change; MD hash `bdb35c9d2cdc6bb9` and MM hash `0863f46b643b5555` both unchanged.
+- JIT MD/MM identical to `doc/ios-baselines`.
+- `dsp56kTestRunner` exit 0 in both builds.
+
+**Interpreter rtf**, opt build, M4 Max, idle check passed (load 2.5–2.9), best of 3 × 20 s:
+
+| | before (Phase 2) | after | |
+|---|---|---|---|
+| MM | 0.651x | **0.661x** | +1.5% |
+| MD | 0.860x | **0.945x** | +10% |
+
+MM gains less than its 8% profile share suggests: its hot loops have three-instruction bodies (`do #$22,$7cf` on P:0x7cd–0x7cf), so every third instruction really is a loop end. Adding PGO's measured gain (+11% for MM in Phase 2) puts MM at about 0.73x on this Mac.
+
+**Projection, MM, sustained** (an estimate to be replaced by device measurements; assumptions listed):
+
+| device | interpreter (opt + PGO) | JIT (Mac JIT 2.77x) |
+|---|---|---|
+| iPad Pro M4 | peak ≈ 0.69–0.73x, sustained ≈ 0.47–0.62x | peak ≈ 2.6–2.8x, sustained ≈ 1.8–2.4x |
+| iPhone 17 Pro Max | peak ≈ 0.69–0.77x, sustained ≈ 0.40–0.55x | peak ≈ 2.6–2.9x, sustained ≈ 1.5–2.1x |
+
+**Assumptions behind the projection:**
+- **iPad:** the iPad's M4 P-core matches this M4 Max's P-core within about 5% (same generation, about 4.4 vs 4.5 GHz).
+- **iPhone:** the A19 Pro's single-core speed is assumed comparable to M4. Not verified here.
+- **Sustained derating:** ×0.65–0.85 on the iPad, from the earlier work's M5 measurement (1.59x cool → 0.999x after 40 min), and ×0.55–0.75 on the phone, which has less thermal headroom.
+- **JIT:** assumes the device JIT reaches the desktop JIT's speed, since it is the same arm64 code.
+
+**Conclusion:** the MM interpreter stays below real time on both devices even at its best. Its remaining cost is spread thin, so another quick win of more than ~10% is unlikely. The MM thread bound (2.09x) would be needed to reach about 1x, and MM's sync gap of about 103 DSP cycles makes that bound hard to approach.
