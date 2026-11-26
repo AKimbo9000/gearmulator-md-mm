@@ -454,3 +454,10 @@ MM gains less than its 8% profile share suggests: its hot loops have three-instr
 4. Enable JIT for JIT Probe and report PASS/FAIL.
 
 The first real answer on whether the JIT route works on 27.0 (iPad) and 27.2.1 (iPhone) comes from step 4.
+
+**Pairing files from this Mac: blocked (2026-11-26).**
+- There is no command-line pairing tool here (`idevicepair` and `pymobiledevice3` are not installed). StikDebug's documented Mac route is the iloader GUI, which is installed.
+- Driving iloader through computer use failed: macOS has not given the Claude desktop app Screen Recording permission.
+- **To unblock, either:**
+  - grant it (System Settings → Privacy & Security → Screen Recording → Claude) and ask again, and I place both files with iloader; or
+  - use StikDebug's on-device pairing (Settings → Pair a Device), which works on iOS/iPadOS 27 (`doc/JIT_SETUP.md`, step 2).
