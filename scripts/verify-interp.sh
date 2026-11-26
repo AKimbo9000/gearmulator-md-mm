@@ -58,8 +58,7 @@ build_engine()
 		verify "build.$engine" FAIL "configure failed, see configure-$engine.log"
 		return 1
 	fi
-	if ! run_timeout 3600 "$VERIFY_OUT/build-$engine.log" cmake --build "$dir" \
-		--target dsp56kTestRunner trigPressFirmwareTest; then
+	if ! run_timeout 3600 "$VERIFY_OUT/build-$engine.log" cmake --build "$dir"; then
 		verify "build.$engine" FAIL "build failed, see build-$engine.log"
 		return 1
 	fi
@@ -88,6 +87,35 @@ else
 	verify dsp56kTestRunner.interp "$([[ $runner_rc_interp == 0 ]] && echo PASS || echo FAIL)" "exit=$runner_rc_interp"
 fi
 
+# ---------------------------------------------------------------- ctest (compare mode)
+# Every test in the build (mdLib unit + firmware tests and the dsp56300 tests), with
+# firmware required so a missing ROM fails instead of skipping. Runs in the background
+# alongside the renders.
+start_ctest()
+{
+	local engine="$1"
+	( cd "build/mac-$engine$SUFFIX" && GEARMULATOR_REQUIRE_FIRMWARE_TESTS=1 \
+		ctest -C "$CONFIG" -j 4 --output-on-failure --timeout "${VERIFY_CTEST_TIMEOUT:-1800}" \
+		> "$VERIFY_OUT/ctest-$engine.log" 2>&1; echo $? > "$VERIFY_OUT/ctest-$engine.rc" ) &
+}
+report_ctest()
+{
+	local engine="$1" rc summary
+	rc="$(cat "$VERIFY_OUT/ctest-$engine.rc" 2>/dev/null || echo 255)"
+	summary="$(grep -E 'tests passed, [0-9]+ tests failed out of [0-9]+' "$VERIFY_OUT/ctest-$engine.log" | tail -1)"
+	local total failed
+	total="$(sed -nE 's/.*out of ([0-9]+).*/\1/p' <<< "$summary")"
+	failed="$(sed -nE 's/.*passed, ([0-9]+) tests failed.*/\1/p' <<< "$summary")"
+	if [[ $rc == 0 && -n "$total" && "$failed" == 0 ]]; then
+		verify "ctest.mdLib.$engine" PASS "$total/$total (GEARMULATOR_REQUIRE_FIRMWARE_TESTS=1)"
+	else
+		verify "ctest.mdLib.$engine" FAIL "exit=$rc ${summary:-no summary}; failed: $(grep -E '^\s+[0-9]+ - ' "$VERIFY_OUT/ctest-$engine.log" | sed -E 's/^ +[0-9]+ - //' | tr '\n' ' ')"
+	fi
+}
+if [[ $MODE != baseline ]]; then
+	for engine in "${ENGINES[@]}"; do start_ctest "$engine"; done
+fi
+
 # ---------------------------------------------------------------- renders
 # Runs are independent processes and run in parallel; wall-clock rtf printed here is
 # therefore informational only (Phase 2 measures speed on an idle machine).
@@ -113,12 +141,17 @@ first_divergence()  # <csvA> <csvB>: prints "line N: A | B" for the first differ
 	paste -d'|' "$1" "$2" | awk -F'|' 'NR>1 && $1!=$2 { print "checkpoint " NR-1 ": " $1 " vs " $2; exit }'
 }
 
+# Wall-clock limit per render. The JIT renders take ~10 s here; the interpreter gets
+# more room. Override with VERIFY_JIT_TIMEOUT / VERIFY_INTERP_TIMEOUT (seconds).
+JIT_TIMEOUT="${VERIFY_JIT_TIMEOUT:-300}"
+INTERP_TIMEOUT="${VERIFY_INTERP_TIMEOUT:-900}"
+[[ $CONFIG == Debug ]] && JIT_TIMEOUT="${VERIFY_JIT_TIMEOUT:-1800}" && INTERP_TIMEOUT="${VERIFY_INTERP_TIMEOUT:-5400}"
 for model in "${MODELS[@]}"; do
-	start_render jit "$model" run1 1800
-	start_render interp "$model" run1 3600
-	[[ $MODE == baseline ]] && start_render jit "$model" run2 1800
+	start_render jit "$model" run1 "$JIT_TIMEOUT"
+	start_render interp "$model" run1 "$INTERP_TIMEOUT"
+	[[ $MODE == baseline ]] && start_render jit "$model" run2 "$JIT_TIMEOUT"
 done
-wait
+wait   # renders and, in compare mode, the ctest runs
 
 for model in "${MODELS[@]}"; do
 	for engine in "${ENGINES[@]}"; do
@@ -126,7 +159,13 @@ for model in "${MODELS[@]}"; do
 		status=PASS
 		[[ $rc != 0 ]] && status=FAIL
 		[[ $engine == interp && $MODE == baseline && $rc != 0 ]] && status=INFO
-		[[ $rc == 124 ]] && rc="timeout"
+		if [[ $rc == 124 ]]; then
+			limit="$JIT_TIMEOUT"; [[ $engine == interp ]] && limit="$INTERP_TIMEOUT"
+			last="$(tail -1 "$VERIFY_OUT/counters-$engine-$model-run1.csv" 2>/dev/null)"
+			[[ -z "$last" || "$last" == frame,* ]] && last="none"
+			verify "$model.$engine.run" "$status" "TIMEOUT after ${limit}s wall, last checkpoint (frame,uc,dsp0 instr/cycles/pc,dsp1 instr/cycles/pc): $last"
+			continue
+		fi
 		verify "$model.$engine.run" "$status" "exit=$rc hash=$(render_field "$engine" "$model" run1 hash) boot_ready=$(render_field "$engine" "$model" run1 boot_ready) hold_peak=$(render_field "$engine" "$model" run1 hold_peak) rtf=$(render_field "$engine" "$model" run1 rtf)"
 	done
 
@@ -161,6 +200,10 @@ for model in "${MODELS[@]}"; do
 		verify "$model.render" "$([[ $MODE == baseline ]] && echo INFO || echo FAIL)" "jit=$jit_hash interp=${int_hash:-none} MISMATCH first-divergence: $div"
 	fi
 done
+
+if [[ $MODE != baseline ]]; then
+	for engine in "${ENGINES[@]}"; do report_ctest "$engine"; done
+fi
 
 # ---------------------------------------------------------------- baseline record
 if [[ $MODE == baseline && $VERIFY_FAILED -eq 0 ]]; then

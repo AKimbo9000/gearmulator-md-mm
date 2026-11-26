@@ -118,6 +118,9 @@ namespace
 				static_cast<unsigned long long>(producer.getInstructionCounter()),
 				static_cast<unsigned long long>(producer.getCycles()),
 				static_cast<unsigned>(producer.getPC().toWord()));
+			// One line per checkpoint reaches the file at once, so a stalled run still
+			// shows how far it got.
+			std::fflush(m_counters);
 		}
 
 		md::Hardware& m_hardware;
