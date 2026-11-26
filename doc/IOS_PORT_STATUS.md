@@ -474,3 +474,17 @@ The first real answer on whether the JIT route works on 27.0 (iPad) and 27.2.1 (
   2. Install LocalDevVPN on both devices.
   3. Mount the disk image and enable JIT for JIT Probe. Only then can the probe run the handshake and the generated-code check and report PASS/FAIL.
 - **Next once unblocked:** read `Documents/jitprobe.log` from both devices; then Phase B if at least one device passes.
+
+### 2026-11-27: JIT probe PASS on both devices (untethered, through StikDebug)
+
+You ran the probe, without the Mac, through StikDebug. Its logs (`Documents/jitprobe.log`, pulled with devicectl):
+
+| device | prepare returned (RX) | writable alias | generated code | patched after detach | result |
+|---|---|---|---|---|---|
+| iPad Pro M4, iPadOS 27.0 | `0x10fc00000`, r-x (max rwx) | `0x110c00000` | 42 (expected 42) | 7 (expected 7) | **PASS** |
+| iPhone 17 Pro Max, iOS 27.2.1 | `0x115268000`, r-x (max rwx) | `0x116268000` | 42 (expected 42) | 7 (expected 7) | **PASS** |
+
+**What this establishes:**
+- The StikDebug TXM protocol works on both 27.x versions: prepare, a `vm_remap` RW alias, detach, then writing and executing code, and **re-writing it after detach**, which a JIT needs for recompilation.
+- `vm_region` reports the first entry of the returned range as 16 KiB, although 16 MiB was requested. TXM maps the range page by page. Phase B's allocator must treat the region as the size it asked for, and must not rely on `vm_region`'s size.
+- The JIT route is open. Next: Phase A, then Phase B.
