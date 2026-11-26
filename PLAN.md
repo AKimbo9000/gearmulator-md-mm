@@ -1,45 +1,34 @@
-# PLAN — Gearmulator MD/MM on iOS/iPadOS (standalone + AUv3)
+# PLAN — Gearmulator Monomachine on iPad and iPhone (standalone first)
 
-## Context
+Revised 2026-11-26 for a new target. The original phases 0–6 are summarised under "Done so far" and "Deferred";
+their measurements are in `doc/IOS_PORT_STATUS.md`.
 
-This tree (alpha.16, branch `ios-port`) has no iOS support. Earlier work
-(`../gearmulator-ios`, Sept 2026) got MD to boot under the interpreter once
-`movep` was fixed, and got MM past its halt once the DO-loop end-word was fixed.
-That work was done on alpha.12's old flat layout, and its patches mix real fixes
-with a lot of diagnostics and timing heuristics.
+## Target
 
-The goal: MD and MM as an iPad app and an AUv3, with interpreter-only DSPs (no
-JIT on iOS), the same emulated results as the JIT, and real time on the
-user's iPad.
+- **First product:** a **standalone Monomachine app**. Machinedrum, and AUv3 for both, come later.
+- **Devices:** **iPad Pro 13" M4** (iPadOS 27.0) and **iPhone 17 Pro Max** (iOS 27.2.1). Both are TXM-class devices, with Developer Mode on. Their IDs are in `CLAUDE.local.md`.
+- **No Mac at run time.** The app must launch and run with no Mac and no cable. A one-time setup that needs the Mac is fine: install, pairing file, ROM import.
+- **Dual engine:**
+  - **JIT** when StikDebug has attached and granted an executable region.
+  - **Interpreter** otherwise.
+  - An iOS update that breaks StikDebug may only make the app slower, never unusable.
+  - The engine in use is shown to the user.
+- **Accuracy rules unchanged:**
+  - The JIT on the device must reproduce `doc/ios-baselines` exactly.
+  - The desktop JIT keeps producing the same results.
+  - The interpreter keeps its current, verified output: MD audio equals the JIT; MM does not yet.
 
-**Facts this plan rests on (all measured or read this session):**
-- **DSP core location.** The core is a submodule: `source/cpu/dsp56300` points to joelanders/dsp56300-md-mm, and its nested `source/asmjit` points to dsp56300/asmjit.
-- **Forks (approved).** Fork both to AKimbo9000, repoint `.gitmodules`, and push submodule work there.
-- **Engines stop at different points today.** The JIT runs blocks of up to 32 instructions on MD and checks peripherals, interrupts and `execUntilCycles` targets only between blocks. The interpreter checks them before every instruction ([dsp.h:221-260](source/cpu/dsp56300/source/dsp56kEmu/dsp.h:221)). So whole-machine JIT and interpreter renders cannot match until the interpreter follows JIT block boundaries.
-- **The JIT block planner is reusable.** [`JitBlock::getInfo`](source/cpu/dsp56300/source/dsp56kEmu/jitblock.h:47) is a static planner that generates no code, so the interpreter can call it.
-- **MD's scheduler order is set by run order, not timestamps.**
-  - It interleaves the ColdFire and both DSPs on one thread ([mdhardware.cpp:1439-2081](source/elektron/md/mdLib/mdhardware.cpp:1439)).
-  - DSPs run inside ColdFire instructions and inside each other's callbacks.
-  - Four "run until a condition" loops in `mddsp.cpp` overshoot by up to 100k cycles.
-- **Threading decision (approved).** Phase 3 is a new opt-in *timed* mode. The desktop default stays serial.
-- **Missing test tools.** There is no `mdBench`, no `trigPressFirmwareTest`, no WAV/render output and no JIT-vs-interpreter whole-machine test. CLAUDE.md's mention of `trigPressFirmwareTest` refers to the old fork.
-- **ROM tooling to reuse.** Tests read `GEARMULATOR_MD_FIRMWARE_BIN` and `GEARMULATOR_MM_FIRMWARE_BIN`. Both local ROMs match the SHA-256s in `scripts/macos/build_mdmm.sh`.
-- **Mac.** M4 Max (12P+4E), Xcode 27.2, iOS SDK 27.2, CMake 4.5.1, ninja available.
-- **iPad.** **iPad Pro 13" M4**, connected. The prior iPad numbers were taken on an M5.
-- **Signing.** There were 0 code-signing identities in the keychain; you are creating one. The team (ID in `CLAUDE.local.md`, never in this file) is paid, so App Groups are available.
+## Why this shape (measurements in doc/IOS_PORT_STATUS.md)
 
-**Bundle IDs** (also recorded in `CLAUDE.local.md`):
-
-| Product | Bundle ID |
-|---|---|
-| MD app | `com.aki.gearmulator.md` |
-| MD AUv3 | `com.aki.gearmulator.md.auv3` |
-| MM app | `com.aki.gearmulator.mm` |
-| MM AUv3 | `com.aki.gearmulator.mm.auv3` |
-| App Group | `group.com.aki.gearmulator.mdmm` |
-| Phase 1.5 bench app (my default; say if you want another) | `com.aki.gearmulator.bench` |
-
-**Prior iPad numbers (M5, interpreter):** MD 0.576x real time, needing ~1.74x more. MM 0.71–0.79x. So threads (Phase 3) are needed for speed, not only for structure.
+- **MM interpreter speed on this Mac:** 0.661x (OPTIMIZE_DSP+ThinLTO, after the two fast-path speedups), about 0.73x with PGO.
+  - Projected sustained: **0.47–0.62x** on the iPad, **0.40–0.55x** on the iPhone. Below real time on both.
+- **MM JIT** runs 2.77x on this Mac. Projected sustained about **1.8–2.4x** on the iPad and **1.5–2.1x** on the iPhone, which is real time with margin.
+- **Threads** could give MM at most 2.09x. MM's mixer meets the producer about every **103 DSP cycles**, which would make a timed threaded mode mostly synchronisation. So threading is deferred, not dropped.
+- **StikDebug on TXM devices:**
+  - **Protocol:** the app asks the debugger for an RX region (`brk #0xf00d`, x16 = 1), writes code through its own RW alias, and detaches.
+  - **Entitlement:** only `get-task-allow`, which development-signed builds carry.
+  - **Reliability:** fragile on 27.x. One report says StikDebug 3.2.2 cannot attach on 27.2.1.
+  - **So:** the JIT is the fast path and the interpreter is the guaranteed path.
 
 ## Fix inventory: what is here, what to port
 
@@ -115,324 +104,119 @@ The old patches are not `git apply`'d. Each real fix is reimplemented, and its c
   - On a mismatch, print the first divergent checkpoint.
 - **JIT baseline.** `doc/ios-baselines/jit-render.json` records the JIT hashes from the untouched tree. Every later phase must reproduce them, which is the "desktop JIT unchanged" rule.
 
-## Phase 0 — Commit CLAUDE.md and .gitignore, forks, harness, verify scripts
+## Done so far
+
+| Phase | State |
+|---|---|
+| 0 Harness, verify scripts, JIT baseline | done |
+| 1 Port fixes; interpreter == JIT on macOS | partly done. 1a fixes landed; DO-loop livelock fixed; MD interpreter audio == JIT. MM differs (stop-point granularity); its sine tests show link dropouts |
+| 2 Interpreter speed on this Mac | done (`verify-interp.sh --perf` PASS) |
+| Interpreter speedups | two fast paths, results bit-identical; MM +1.5%, MD +10% |
+
+## Phase A — Both engines in one DSP core
 
 **Work:**
-0. Add the bundle IDs above to `CLAUDE.local.md` (gitignored, not committed).
-1. Commit CLAUDE.md and .gitignore as they are. Then make a separate commit correcting CLAUDE.md:
-   - Apple Release is `-Ofast -fno-lto`, not `-flto`.
-   - `trigPressFirmwareTest` is not in this tree.
-   - Add the fork push targets.
-2. Run `gh repo fork joelanders/dsp56300-md-mm` and `gh repo fork dsp56300/asmjit` under AKimbo9000. Set the submodule URLs (`git submodule set-url`), create `ios-port` branches, and commit.
-3. Add the render and counters harness in **test code only**, so the JIT baseline is recorded before any emulator change:
-   - Add `trigPressFirmwareTest md|mm [--render <out>] [--counters <out>]`, modelled on `encoderPressFirmwareTest`. (Done this way rather than extending `mdAudioFirmwareTest`/`mmAudioFirmwareTest`, whose randomized resampled host blocks can't give an exact raw-word hash.)
-   - Reuse `benchmarkDevice()` (`mdUwFirmwareTest.cpp:268`) and the waveform diff (`mdBlockLinkFirmwareTest.cpp:187`).
-4. Write `scripts/verify-interp.sh` (Ninja, Release, arm64-only, plugins off, other synths off):
-   - Builds `build/mac-jit` and `build/mac-interp`, the latter with `-DDSP56K_FORCE_INTERPRETER=ON`.
-   - Flags: `--debug` (builds the Debug variants), `--perf`, `--baseline`.
-5. Write `verify-sim.sh` and `verify-device.sh` to the same contract. Until their phase lands, they fail at a named stage.
+- Make the engine a runtime choice per `dsp56k::DSP`, fixed at construction: JIT or interpreter.
+- `exec()`, `execUntilCycles()`, `execInlinePeripheralCheck()` and the interpreter-only cycle accounting branch on a member, not on `g_useJIT`.
+- A third CMake mode, `DSP56K_RUNTIME_ENGINE=ON`, compiles both. The existing `DSP56K_FORCE_INTERPRETER` and the default desktop JIT build keep their constant paths, unchanged.
+- `trigPressFirmwareTest` gains `--engine jit|interp` in a runtime build.
 
 **Done when:**
 ```
-$ scripts/verify-interp.sh --baseline
-VERIFY build.jit OK / build.interp OK
-VERIFY dsp56kTestRunner.jit exit=0 PASS        (.interp recorded as-is)
-VERIFY md.jit.determinism run1==run2 PASS      VERIFY mm.jit.determinism PASS
-VERIFY md.render jit=<h> interp=<h'> MISMATCH first-divergence=<ckpt> INFO
-VERIFY baseline written doc/ios-baselines/jit-render.json
-VERIFY RESULT PASS   (exit 0; baseline mode)
-$ scripts/verify-sim.sh      → VERIFY stage=configure FAIL (expected until Phase 4), exit 1
-$ scripts/verify-device.sh   → VERIFY preflight device=connected identity=MISSING FAIL, exit 1
+$ scripts/verify-interp.sh                     (existing checks, plus a runtime-engine build)
+VERIFY jit.unchanged.md / .mm == doc/ios-baselines PASS
+VERIFY runtime.jit md,mm == doc/ios-baselines PASS
+VERIFY runtime.interp md,mm == interpreter build (hash and every counter checkpoint) PASS
+VERIFY perf.mm.runtime.interp rtf within 2% of the interpreter-only build PASS
 ```
-`bash -n` must pass on all three scripts, plus shellcheck if it is installed. `.gitmodules` must point at the AKimbo9000 forks.
 
-**Risks:**
-- The JIT may not be deterministic run to run. If not, stop: a fixed reference is a precondition for everything else.
-- MD's first boot formats +Drive and reboots, which is long but deterministic. If a factory-cache start is needed, use the existing `GEARMULATOR_MD_FACTORY_CACHE`.
-- The interpreter build may not compile or may crash (`mdRamPackingTest`). In baseline mode that is recorded, not fixed.
+**Risk:** the per-call engine branch costs interpreter speed. Measure it; if it shows, specialise the scheduler's hot loop per engine.
 
-## Phase 1 — Port fixes; MD and MM interpreter renders match the JIT on macOS
+## Phase B — JIT memory that works on TXM, proved on macOS first
 
 **Work:**
-- **1a. Port the DSP-core fixes in the table**, each with a unit test in `dsp56kTestRunner`:
-  - PC guard
-  - Rn+displacement peripheral routing
-  - `LOG_ERR_BASE` rate limit
-  - cowmemory
-  - asmjit include
-  - trampoline `lea_`
-
-  Fix `mdRamPackingTest` for interpreter builds. These DSP-core iOS fixes compile and are tested on macOS here; the parent build glue waits for Phase 4.
-- **1b. Block-shaped interpreter** (the core of this phase). A DSP config flag, set only by mdLib, makes the interpreter follow the JIT's semantics:
-  - It keeps a shadow block map (start PC → `JitBlock::getInfo` result, with the same `JitConfig`, the same `ExistingCode`/`VolatileP`/loop-start/loop-end bookkeeping, and invalidation on P writes).
-  - It runs each block's instructions with `execOp`.
-  - It services peripherals and interrupts only before a block, exactly as `execJitImpl` does.
-  - It charges cycles where the JIT charges them.
-  - `execUntilCycles` stops at the first block boundary at or after the target.
-  - It mirrors `maxDoIterations=4` DO slicing, fast interrupts and `dynamicFastInterrupts`, and the counter effects of `nopLoopSkip`/`spinSkip`/`fastForward`.
-
-  Other synths and `InterpreterUnitTests` keep the per-instruction interpreter.
-- **1c. Iterate on the first divergent checkpoint** until MD and MM match. Use Debug (asserts on) for diagnosis.
+- **Measure** MM's and MD's peak JIT code size on macOS from the asmjit allocator statistics, and set the region size to about 2× that.
+- **Code allocator:** an `asmjit::Target` subclass backed by one pre-reserved region with an RX view and an RW alias:
+  - sub-allocate from a free list, and free when P memory changes;
+  - `relocateToBase(rx)`, then `copyFlattenedData(rw)`, then `sys_icache_invalidate(rx)`;
+  - the JIT and trampolines use it instead of `JitRuntime`.
+- **On macOS** the region comes from `mach_vm_allocate` + `mach_vm_remap` with MAP_JIT rules. This proves the allocator against the baseline before any device run.
+- **iOS front end:**
+  1. Check `CS_DEBUGGED` (`csops`).
+  2. Run the StikDebug prepare handshake for that one region, with a SIGTRAP guard for an unanswered `brk`.
+  3. Validate the address: 16 KiB aligned, and an RX mapping of this process.
+  4. Create the `vm_remap` RW alias, then detach.
+  5. On any failure, use the interpreter.
 
 **Done when:**
 ```
-$ scripts/verify-interp.sh            (and once with --debug: same hashes, no assert)
-VERIFY dsp56kTestRunner.jit exit=0 PASS   VERIFY dsp56kTestRunner.interp exit=0 PASS
-VERIFY ctest.mdLib.jit N/N PASS   VERIFY ctest.mdLib.interp N/N PASS   (GEARMULATOR_REQUIRE_FIRMWARE_TESTS=1)
-VERIFY jit.unchanged md,mm == doc/ios-baselines/jit-render.json PASS
-VERIFY md.render jit=<h> interp=<h> MATCH   VERIFY md.counters 120/120 checkpoints MATCH
-VERIFY mm.render jit=<h> interp=<h> MATCH   VERIFY mm.counters MATCH
-VERIFY md.trig1 peak=<p> >0 PASS            VERIFY mm.trig1 peak=<p> >0 PASS
-VERIFY RESULT PASS
+$ scripts/verify-interp.sh
+VERIFY jit.region.md,mm (custom allocator, dual-mapped region) == doc/ios-baselines PASS
+VERIFY jit.region.peak_code md=<KB> mm=<KB> (region <MB>) INFO
 ```
 
 **Risks:**
-- **Biggest risk: a JIT behaviour the interpreter can't mirror** without changing JIT results, such as block history from compile order or cycle-charge timing visible to a peripheral read in the middle of a block. **Escalation:** stop and bring the first-divergence evidence. Never loosen the comparison or touch JIT output.
-- **Turn limit.** If an exact JIT == interpreter match for both MD and MM isn't reached within 30 turns of Phase 1 work, stop and report:
-  - the closest state reached (which checkpoints match, and for how long each instrument stays identical);
-  - the first divergence (checkpoint, DSP, PC, instruction and cycle counts in both engines);
-  - what was tried.
-- Mirroring the JIT fast paths exactly.
-- Sites that mix `exec()` and `execUntilCycles` (mddsp.cpp sites 4–7) must also follow block granularity.
+- Blocks that are invalidated and recompiled must not exhaust the fixed region. Compact or reset the region when it is full, without changing emulated results.
+- `get-task-allow` builds only.
 
-**Upside:** one peripheral check per block instead of per instruction should make the interpreter faster.
-
-## Phase 1.5 — Minimal device build: serial interpreter real-time factor on the iPad
-
-This phase measures the serial interpreter on the real target before any threading design is committed to. It must finish, and its numbers must be in `IOS_PORT_STATUS.md`, before Phase 3 starts.
+## Phase C — Standalone Monomachine app (simulator, then devices)
 
 **Work:**
-- **Share the render code.** Move the harness's render/bench routine into mdLib, so mdLibTest, this bench app and the later `--selftest` share one code path.
-- **Add a headless bench app**, `com.aki.gearmulator.bench`, as an iOS app target next to mdLibTest:
-  - It links only mdLib and the DSP core: no JUCE, no editor.
-  - It runs as a real UIApplication with the work on a background queue (the cv `iosmain.mm` pattern), so the watchdog doesn't kill it.
-  - It takes `--bench md|mm --seconds N --run-id <id>` through `devicectl` launch arguments.
-  - It writes `Documents/bench-<id>.json`.
-- **Bring forward only the build glue a library-only iOS build needs:**
-  - arch and deployment-target overrides
-  - 3rdparty gating (or the lua `LUA_USE_IOS` fix)
-  - the changelog skip when cross-compiling
-  - automatic signing, with the team read from `CLAUDE.local.md`
-
-  The DSP-core iOS fixes are already in from Phase 1a.
-- **Build configurations:** plain Release, and `OPTIMIZE_DSP` + ThinLTO. No PGO yet.
-- **Give `verify-device.sh` a `--bench` mode:**
-  1. Preflight.
-  2. Install.
-  3. `devicectl device copy to --domain-type appDataContainer` puts the ROMs in `Documents/ROMs`.
-  4. Launch.
-  5. Poll for that run-id's JSON.
+- **iOS build glue** (from the Parent-repo table): lua `LUA_USE_IOS`, gate 3rdparty, changelog skip, no ad-hoc codesign, JUCE Standalone only (AUv3 off for now), juceRmlUi without GL/Metal, `GL_RED`.
+- **App:** bundle ID `com.aki.gearmulator.mm`, `DSP56K_RUNTIME_ENGINE=ON`, deployment target 17.4.
+- **ROM import from the Files app:** a document picker, plus `UIFileSharingEnabled`/`LSSupportsOpeningDocumentsInPlace`. Validate the 8 MiB size and the FNV fingerprint, then copy into `Documents/ROMs`. Never bundle ROMs.
+- **Engine shown to the user:**
+  - a header badge, "Engine: JIT (StikDebug)" or "Interpreter";
+  - a settings page with the reason (not debugged / handshake failed / region too small / disabled) and the live audio load;
+  - "Relaunch with JIT" through `stikdebug://enable-jit?bundle-id=…`.
+- **`--selftest`:** headless; records engine, hash, rtf and peak memory to `Documents/selftest-<id>.json`.
+- **Port the iOS editor fixes:** fit, rotate, long press.
 
 **Done when:**
 ```
-$ scripts/verify-interp.sh                 (Phase 1 still PASS, run first)
-$ scripts/verify-device.sh --bench
-VERIFY preflight iPad Pro 13 (M4) unlocked devmode=on identity=present PASS
-VERIFY install bench.app PASS   VERIFY roms→container (IPA has none) PASS
-VERIFY device.md.serial-interp.<cfg> run=<id> fresh PASS hash==macOS-interp PASS rtf=<x>x (best of 3×20 s) sustained-60s-min=<y>x mixer=<M> producer=<M> Minstr/s
-VERIFY device.mm.serial-interp.<cfg> … PASS
-VERIFY RESULT PASS
-```
-Results, including the device/Mac ratio, are recorded in `IOS_PORT_STATUS.md`.
-
-**Risks:**
-- A locked device refuses to launch (error 7).
-- The watchdog kills a long run if the main thread isn't kept responsive.
-- Thermal throttling, which is why the sustained 60 s minimum is reported.
-- Provisioning the new bundle ID.
-- If the device hash differs from macOS, that is a correctness finding to chase before Phase 3, not noise.
-
-## Phase 2 — Measure interpreter real-time factor (RTF) on this Mac
-
-**Work:**
-- Add `--perf` to the harness: free-running, best of 3 × 20 s, refuses to run if the load average is too high.
-- Per-component time split via per-slice `mach_absolute_time`, extending the existing `MD_TRANSPORT_DIAGNOSTICS` option.
-- Count cross-component sync events per second and their interval histogram (HI08, link, block link, codec). These are the Phase 3 inputs.
-- Build configurations: plain; `GEARMULATOR_MDMM_APPLE_OPTIMIZE_DSP` + `THINLTO` (the switch that covers dsp56kEmu); and PGO on top, trained on the interpreter.
-
-**Done when:**
-```
-$ scripts/verify-interp.sh --perf
-VERIFY perf.idle loadavg=<x> PASS
-VERIFY perf.md.interp.<cfg> rtf=<x>x mixer=<M>Minstr/s producer=<M> split uc/mix/prod=<a>/<b>/<c>%   (per cfg)
-VERIFY perf.mm.interp.<cfg> …        VERIFY perf.md.jit / perf.mm.jit (reference)
-VERIFY perf.sync md hi08=<n>/s link=<n>/s min-gap=<cyc>   mm …
-VERIFY perf.bound threads≤<sum/max>x   (upper bound for Phase 3)
-VERIFY RESULT PASS
-```
-The numbers, and an iPad projection, are written to `IOS_PORT_STATUS.md`. The Mac M4 Max and the iPad M4 share a core generation, so expect the iPad's *sustained* rate to be lower.
-
-**Risks:**
-- Machine load swings results by up to 9×, so the idle check is enforced.
-- Timers must be per slice, never per instruction.
-
-## Phase 3 — Timed threaded mode (opt-in), JIT == interpreter
-
-**Design:**
-- **Clocks.** The UC, DSP1 and DSP2 each keep a local clock in one integer timebase (the `mdhostclock.h` conversions).
-- **Timestamped events.** Every cross-component effect becomes an event delivered at the receiver's first block boundary at or after the timestamp. Phase 1 makes that point identical in both engines. The events are:
-  - HI08 words, commands and IRQs
-  - HOTX and flags
-  - ESSI0 link frames
-  - block-link DMA deliveries (today these write directly into the peer's memory)
-  - Port C edges
-  - codec frames to the host queue
-- **Cross-component reads** (HI08 status, Port C, DDR4) return the peer's published state as of `t − L`. A reader waits only if the peer hasn't published that far: conservative sync with lookahead L.
-- **Where L comes from.** L is derived from hardware latencies, such as at least one ESSI frame (2,304 DSP cycles) on the serial link. It is never tuned to make a test pass.
-- **Removed in timed mode.** The run-until-condition loops (sites 4–7) and the nested catch-ups (sites 2–3). The UC waits in emulated time.
-- **Executors.**
-  - A *sequential* executor runs the timed mode on one thread.
-  - A *threaded* executor runs it on three threads: spin then `__ulock`, no yield, the realtime policy with the 48k/128 window ported from cv.
-  - The two must produce identical bits; that is the determinism proof.
-- **Selection.** `GEARMULATOR_MDMM_TIMED=1` or a device option. Default off on desktop, on for iOS.
-
-**Phase 3 runs as four separate goals, in this order.** Each ends with its script output and a short report. The next goal starts only after the previous one passes. Every goal also requires `VERIFY serial.jit.unchanged == baseline PASS`, so the desktop default is untouched.
-
-### Goal 3a — Timed mode on one thread (sequential executor); firmware tests pass
-```
-$ scripts/verify-interp.sh --timed=seq
-VERIFY serial.jit.unchanged == baseline PASS
-VERIFY ctest.mdLib.timed-seq.jit N/N PASS   (GEARMULATOR_REQUIRE_FIRMWARE_TESTS=1)
-VERIFY timed-seq.md.determinism run1==run2 PASS   timed-seq.mm … PASS
-VERIFY timed-seq.md.trig1 peak=<p> >0 PASS   timed-seq.mm.trig1 peak=<p> >0 PASS
-VERIFY RESULT PASS
-```
-**Risks:**
-- The firmware handshakes (MD block link and rendezvous, MM backpressure) may not tolerate a hardware-justified L. If so, report; don't tune L.
-- Tests that reach into the scheduler through friend access need porting.
-
-### Goal 3b — JIT == interpreter in timed sequential mode
-```
-$ scripts/verify-interp.sh --timed=seq
-VERIFY ctest.mdLib.timed-seq.interp N/N PASS
-VERIFY timed-seq.md.jit==interp render+counters MATCH   timed-seq.mm … MATCH
-VERIFY RESULT PASS
-```
-**Risk:** an event delivery point that differs between engines. Phase 1's block shaping should already cover it. The same 30-turn stop-and-report rule as Phase 1 applies.
-
-### Goal 3c — Threaded executor bit-identical to sequential
-```
-$ scripts/verify-interp.sh --timed=threaded
-VERIFY timed.md.seq==threaded {jit,interp} 5/5 runs (+1 under stress load) PASS   timed.mm … PASS
-VERIFY ctest.mdLib.timed-threaded.{jit,interp} N/N PASS
-VERIFY tsan.timed-threaded md,mm 0 reports PASS
-VERIFY RESULT PASS
-```
-**Risks:** races in state that has a single owner today (the host audio queue, block-link direct memory writes), and lock-ordering deadlocks.
-
-### Goal 3d — Speed
-```
-$ scripts/verify-interp.sh --timed=threaded --perf
-VERIFY perf.idle PASS
-VERIFY perf.timed.md.interp rtf=<x>x (×<s> vs serial, ≤ Phase 2 bound)   perf.timed.mm …
-VERIFY RESULT PASS
-```
-**Target:** at least 1.6× over the serial interpreter on the Mac, and enough to reach real time on the iPad given the Phase 1.5 device/Mac ratio. If the mode is correct but below 1.3×, I report before Phase 4.
-
-**Risk:** a small L makes sync dominate the run time.
-
-**Overall size:** roughly 2,000 lines across mdhardware/mddsp/mdblocklink.
-
-## Phase 4 — iOS Simulator build plus self-test
-
-**Work:**
-- Port the Phase 4 rows of the parent table, using cv 1c03315c as the reference.
-- Configure with `-DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_OSX_SYSROOT=iphonesimulator -DDSP56K_FORCE_INTERPRETER=ON`, a deployment target of 17.4, and only the Standalone and AUv3 formats.
-- Bundle IDs come from the table in Context. Override JUCE's default appex ID so the extensions are `…md.auv3` and `…mm.auv3`.
-- Add `--selftest --run-id <id> --mode serial|timed` to the MD and MM standalone apps. It runs the **same mdLib render routine as the harness and the Phase 1.5 bench app**, headless and without the editor.
-  - It loads ROMs from `Documents/ROMs`.
-  - It writes `Documents/selftest-<id>.json` with the hash, counters, RTF, peak level and peak resident memory.
-  - It prints a marker line and exits.
-- `verify-sim.sh`:
-  1. Boot "iPad Pro 13-inch (M5)" in the Simulator.
-  2. Install both apps.
-  3. Copy ROMs into each data container (`simctl get_app_container … data`).
-  4. Launch with `simctl launch --console-pty`.
-  5. Compare against the macOS hashes.
-
-**Done when:**
-```
-$ scripts/verify-sim.sh
-VERIFY build.sim md.app mm.app (+appex) OK
-VERIFY sim.md.selftest run=<id> serial=<h>==macOS PASS timed=<h>==macOS PASS rtf=<x> rss=<MB>
-VERIFY sim.mm.selftest … PASS
+$ scripts/verify-sim.sh                       (iPad Pro 13-inch (M5) simulator)
+VERIFY sim.mm.selftest engine=interpreter hash == macOS interpreter PASS
+$ scripts/verify-device.sh --device ipad   and   --device iphone
+VERIFY preflight device=<name> devmode=enabled identity=present PASS
+VERIFY device.mm.selftest engine=interpreter hash == macOS interpreter PASS rtf.sustained-60s=<x>
+VERIFY device.mm.selftest engine=jit (StikDebug attached) hash == doc/ios-baselines PASS rtf.sustained-60s=<x>
 VERIFY bundle.roms none PASS
-VERIFY RESULT PASS
 ```
+Plus a manual check, run by you: no Mac attached, the app launches, imports a ROM from Files, and plays on both devices, on JIT and on the interpreter.
 
 **Risks:**
-- JUCE 7.0.10 with CMake 4.5 policy errors; may need `CMAKE_POLICY_VERSION_MINIMUM`.
-- Software RmlUi rendering cost.
-- `-ffp-contract=off` must apply to `mdhardware.cpp` on iOS too, since float frame maths decides run order.
-- Memory: `m_opcodeCache` is sized by `sizeP()` for two DSPs. AUv3 extensions have tight memory limits, so check the RSS here.
+- StikDebug may not attach on 27.2.1 (iPhone); that is a third-party report. The interpreter fallback covers it, slower.
+- Thermal throttling on the phone.
+- AUv3-style memory limits do not apply to a standalone app, but peak memory is recorded anyway.
 
-## Phase 5 — Device build plus self-test
+## Phase D — One-time setup guide and engine fallback test
 
 **Work:**
-- Reuse the Phase 1.5 device plumbing (signing via `CLAUDE.local.md`, ROM copy, run-id polling) for the real MD and MM apps.
-- PGO trained on macOS, with mismatches as warnings on iOS only.
-- `verify-device.sh` launches each app with `devicectl device process launch … --selftest --run-id <id>`. It then polls `copy from` until that run-id's JSON exists; the run-id defeats the stale-file trap.
+- **`doc/IOS_SETUP.md`:**
+  - the one-time Mac steps: install the app (paid team, one-year profile), the StikDebug pairing file, StikDebug and LocalDevVPN;
+  - the steps on each launch: LocalDevVPN on, StikDebug → our app, or the in-app "Relaunch with JIT";
+  - re-mounting the disk image after a reboot.
+- **Fallback test:** the app with StikDebug absent or failing must start on the interpreter and say so.
 
-**Done when:**
-```
-$ scripts/verify-device.sh
-VERIFY preflight iPad Pro 13 (M4) unlocked devmode=on identity=Apple Development PASS
-VERIFY install md,mm PASS   VERIFY roms→container (IPA has none) PASS
-VERIFY device.md.selftest run=<id> fresh PASS serial,timed hash==macOS PASS rtf.timed=<x>x sustained-60s-min=<y>x
-VERIFY device.mm.selftest … PASS
-VERIFY RESULT PASS
-```
+**Done when:** `verify-device.sh --fallback` shows `engine=interpreter reason=not-debugged` on both devices, and the app shows the badge.
 
-**Real-time target:** at least 1.0× sustained for 60 s, for both instruments in timed mode on the M4. If not met, the levers are PGO, `OPTIMIZE_DSP`/ThinLTO and the thread policy, each measured.
+## Deferred (revisit only on the measurement named)
 
-**Risks:**
-- The M4 is slower than the M5 the earlier numbers came from.
-- Thermal throttling.
-- A locked device refuses to launch (error 7).
-- The watchdog kills a long run if the UIApplication main thread isn't kept responsive.
-
-## Phase 6 — AUv3, plus ROM import from the Files app
-
-**Work:**
-- **App Group** `group.com.aki.gearmulator.mdmm`, shared by the MD and MM apps and both `.appex` (JUCE `APP_GROUPS_ENABLED`/`APP_GROUP_IDS`). On iOS, the RomLoader search path adds the group's `ROMs/` folder.
-- **Import ROM…** in the editor (`juce::FileChooser` → document picker):
-  - Validate the size (8 MiB) and the `md::RomLoader` FNV fingerprint.
-  - Copy into the group's `ROMs/` and reload.
-  - `UIFileSharingEnabled` + `LSSupportsOpeningDocumentsInPlace` let ROMs dropped into Documents be adopted too.
-- **Port the cv editor and AUv3 commits:** fit, rotate, long-press, advanced options, per-instance workgroup, a `reset()` that drops stale audio, and a real tail.
-- **Make sure MD's `processAudio` path never blocks** (IOS_AUV3 lesson).
-- **Self-tests:**
-  - `--selftest-auv3` instantiates the app's own extension out of process via `AVAudioUnit` and renders offline.
-  - `--selftest-import` exercises the accept and reject paths.
-
-**Done when:**
-```
-$ scripts/verify-device.sh --auv3
-VERIFY appgroup ROMs/ visible to md.app mm.app md.appex mm.appex PASS
-VERIFY rom-import reject-size PASS reject-fingerprint PASS accept-MD PASS accept-MM PASS
-VERIFY auv3.md out-of-process render peak=<p> stalls=0 PASS   auv3.mm … PASS
-VERIFY bundle.roms none PASS
-VERIFY RESULT PASS
-```
-You also confirm the manual checks in `IOS_PORT_STATUS.md`:
-- Both AUv3s load in a host on the iPad.
-- Import through the Files picker works.
-- Rotation and backgrounding behave.
-
-**Risks:**
-- The AUv3 memory cap.
-- Document pickers inside an extension may be limited. Fallback: import in the container app; the App Group serves the extension.
-- Host buffer sizes, and RmlUi CPU competing with emulation.
+- **Threads (old Phase 3)** — only if the JIT route fails on both devices. MM's bound is 2.09x, but its sync gap is about 103 DSP cycles.
+- **Block-shaped interpreter (old 1b)** — needed only for MM interpreter == JIT exactness and the MM sine dropouts. Revisit if the interpreter has to be the shipping engine. Its next step is in the status file: count the link drops around frame 1975 of the sine test.
+- **AUv3 and App Group (old Phase 6), and Machinedrum.** MD runs at 0.945x on the interpreter here, about the same as MM's JIT case for margin. They follow once the MM standalone app passes Phase C.
+- **Phase 1.5 bench app:** superseded by Phase C's `--selftest` on both devices.
 
 ## Needs from you
 
-1. **A signing identity, now needed by Phase 1.5** (you're creating it). It's the Apple Development certificate for the team in `CLAUDE.local.md`. `verify-device.sh` preflight checks for it.
-2. **The iPad during device runs (Phases 1.5, 5, 6):** Developer Mode on, this Mac trusted, unlocked, and auto-lock off.
-3. **The bench app ID.** `com.aki.gearmulator.bench` is my default for Phase 1.5; say if you want another.
-4. **A quiet Mac** (no builds, other jobs) when I flag benchmark runs in Phases 1.5, 2, 3d and 5.
-5. **For Phase 6:** an AUv3 host on the iPad (AUM, Logic, GarageBand), and running the Files-picker and host checks by hand.
-6. **Optional:** CLAUDE.local.md lists the ROMs without `.bin`. The scripts match ROMs by hash, so nothing breaks.
+1. **On both devices, one time:** install StikDebug and LocalDevVPN, and create the pairing file. The pairing file needs the Mac once; I will write the exact steps in Phase D.
+2. **A signing identity** for the team in `CLAUDE.local.md`. There were still 0 when last checked, and Phase C's device runs need one.
+3. **Keep both devices unlocked**, with auto-lock off, during device runs. Keep the Mac quiet during speed runs.
+4. **Phase C's manual no-Mac check** on both devices.
 
 ## Verification (end to end)
 
-Each phase ends with its script passing exactly as shown, the numbers recorded in `doc/IOS_PORT_STATUS.md`, and small commits on `ios-port`. Those commits go to origin, and submodule commits go to the AKimbo9000 forks. `verify-interp.sh` (with the JIT baseline check) runs before every device run and after every DSP-core change.
+- **Before every commit to the DSP core:** `verify-interp.sh`, with JIT baseline unchanged and interpreter hashes as before.
+- **After any speed change:** `verify-interp.sh --perf`.
+- **For the devices:** `verify-sim.sh` and `verify-device.sh`, recording the engine, hash and sustained rtf on both devices.
+- **Workflow:** commit small steps to `ios-port`; push submodule work to the AKimbo9000 forks; record numbers in `doc/IOS_PORT_STATUS.md`.
