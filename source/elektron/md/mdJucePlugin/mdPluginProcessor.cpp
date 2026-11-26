@@ -803,7 +803,7 @@ namespace mdJucePlugin
 			else
 				m_startupDiagnosticsEnabled = false;
 		}
-		if(m_model == md::MachineModel::Machinedrum || m_startupDiagnosticsEnabled)
+		if(m_model == md::MachineModel::Machinedrum || m_startupDiagnosticsEnabled || JUCE_IOS)
 			startTimer(250);
 		m_performanceReport = std::make_unique<synthLib::PerformanceReport>(
 			getPlugin().getRealtimeInstrumentation(), panelEventDetails);
@@ -1299,26 +1299,6 @@ namespace mdJucePlugin
 		}
 
 		auto* const holder = juce::StandalonePluginHolder::getInstance();
-#if JUCE_IOS
-		// The synth does not need the input. With no input channels JUCE selects AVAudioSessionCategoryPlayback,
-		// which the silent switch does not mute and which routes to the speaker
-		if(holder)
-		{
-			static bool inputsClosed = false;
-			juce::AudioDeviceManager::AudioDeviceSetup setup;
-			holder->deviceManager.getAudioDeviceSetup(setup);
-			if(!inputsClosed && (setup.inputChannels.countNumberOfSetBits() > 0 || setup.useDefaultInputChannels))
-			{
-				setup.inputChannels.clear();
-				setup.useDefaultInputChannels = false;
-				holder->deviceManager.setAudioDeviceSetup(setup, true);
-				// and drop JUCE's "Audio input is muted to avoid feedback loop" banner: there is no input any more
-				holder->processorHasPotentialFeedbackLoop = false;
-				holder->getMuteInputValue().setValue(false);
-				inputsClosed = true;
-			}
-		}
-#endif
 		auto* const audioDevice = holder
 			? holder->deviceManager.getCurrentAudioDevice() : nullptr;
 		uint64_t cycles = 0;
@@ -1352,8 +1332,35 @@ namespace mdJucePlugin
 		m_startupDiagnosticsFile.appendText(line);
 	}
 
+#if JUCE_IOS
+	// The synth does not need the input. With no input channels JUCE selects AVAudioSessionCategoryPlayback, which the
+	// silent switch does not mute and which routes to the speaker. Checked on every tick, not only during startup: the
+	// app can be held at launch (debugger attach for the JIT) and an audio device restart can bring the inputs back.
+	void AudioPluginAudioProcessor::closeStandaloneInputsIos()
+	{
+		auto* const holder = juce::StandalonePluginHolder::getInstance();
+		if(!holder)
+			return;
+		juce::AudioDeviceManager::AudioDeviceSetup setup;
+		holder->deviceManager.getAudioDeviceSetup(setup);
+		if(setup.inputChannels.countNumberOfSetBits() > 0 || setup.useDefaultInputChannels)
+		{
+			setup.inputChannels.clear();
+			setup.useDefaultInputChannels = false;
+			holder->deviceManager.setAudioDeviceSetup(setup, true);
+		}
+		// and no "Audio input is muted to avoid feedback loop" banner: there is no input to feed back
+		holder->processorHasPotentialFeedbackLoop = false;
+		if(static_cast<bool>(holder->getMuteInputValue().getValue()))
+			holder->getMuteInputValue().setValue(false);
+	}
+#endif
+
 	void AudioPluginAudioProcessor::timerCallback()
 	{
+#if JUCE_IOS
+		closeStandaloneInputsIos();
+#endif
 		recordStandaloneStartupDiagnostics();
 		if(serviceProjectStateRestore())
 			return;

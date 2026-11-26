@@ -1,5 +1,7 @@
 #include "pluginEditorWindow.h"
 
+#include <cstdlib>
+
 #include "pluginEditor.h"
 #include "pluginEditorState.h"
 
@@ -13,6 +15,12 @@
 
 namespace jucePluginEditorLib
 {
+#if JUCE_IOS
+namespace
+{
+	void openSettingsWhenReady(juce::Component::SafePointer<EditorWindow> _window, int _triesLeft);
+}
+#endif
 
 //==============================================================================
 EditorWindow::EditorWindow(juce::AudioProcessor& _p, PluginEditorState& _s, juce::PropertiesFile& _config)
@@ -72,6 +80,9 @@ EditorWindow::EditorWindow(juce::AudioProcessor& _p, PluginEditorState& _s, juce
 		});
 	};
 	addAndMakeVisible(*m_gearButton);
+	// test hook (device screenshots of the settings page, which cannot be tapped from the Mac)
+	if (std::getenv("GEARMULATOR_IOS_OPEN_SETTINGS"))
+		openSettingsWhenReady(juce::Component::SafePointer<EditorWindow>(this), 30);
 #endif
 }
 
@@ -102,6 +113,19 @@ namespace
 	// On iOS the editor covers the whole window (full screen, no title bar). resized() fits the panel into the safe
 	// area and centres it, which leaves room for the Settings button beside or below it. A panel-sized editor was
 	// placed top-left by the standalone window and left the button no room but the panel's corner.
+	// test hook: tap the Settings button once the editor exists (it loads after the window on a device)
+	void openSettingsWhenReady(juce::Component::SafePointer<EditorWindow> _window, const int _triesLeft)
+	{
+		juce::Timer::callAfterDelay(1000, [_window, _triesLeft]
+		{
+			if (!_window)
+				return;
+			if (_window->clickSettingsIfReady() || _triesLeft <= 0)
+				return;
+			openSettingsWhenReady(_window, _triesLeft - 1);
+		});
+	}
+
 	juce::Point<int> iosEditorSize(const juce::Component& _editor)
 	{
 		if (const auto* top = _editor.getTopLevelComponent(); top && top != &_editor && !top->getLocalBounds().isEmpty())
@@ -110,6 +134,19 @@ namespace
 			return {display->totalArea.getWidth(), display->totalArea.getHeight()};
 		return {};
 	}
+}
+#endif
+
+#if JUCE_IOS
+bool EditorWindow::clickSettingsIfReady()
+{
+	const auto* editor = m_state.getEditor();
+	if (!m_gearButton || !editor || !editor->getRmlComponent() || !isShowing())
+		return false;
+	// triggerClick() posts a command message that never reached the button here; call the handler directly
+	if (m_gearButton->onClick)
+		m_gearButton->onClick();
+	return true;
 }
 #endif
 

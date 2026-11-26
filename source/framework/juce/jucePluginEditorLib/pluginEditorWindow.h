@@ -37,6 +37,11 @@ namespace jucePluginEditorLib
 		// must not expand the entire composite to this panel's saved scale.
 		void setEmbedded(bool _embedded);
 
+#if JUCE_IOS
+		// test hook: taps the Settings button once the editor has loaded; false while it has not
+		bool clickSettingsIfReady();
+#endif
+
 	private:
 		void setGuiScale(float _percent);
 		void setUiRoot(juce::Component* _component);

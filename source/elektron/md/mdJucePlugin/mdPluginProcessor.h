@@ -124,6 +124,9 @@ namespace mdJucePlugin
 		bool serviceDeferredStateRestore();
 		bool serviceStateRestoreFailure();
 		void recordStandaloneStartupDiagnostics();
+#if JUCE_IOS
+		void closeStandaloneInputsIos();
+#endif
 		void reportProjectStateRestoreFailure(const std::string& _error);
 		// Writes the project handed in by setStateInformation to a rescue file, once per failed restore.
 		bool rescueUnloadedState(uint64_t _generation, std::string& _path);
