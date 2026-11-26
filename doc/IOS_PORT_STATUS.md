@@ -436,3 +436,21 @@ MM gains less than its 8% profile share suggests: its hot loops have three-instr
   - all device numbers (assumptions in the Step 3 projection table);
   - the A19 Pro's single-core speed relative to M4 (not verified);
   - StikDebug's behaviour on these two OS versions, known only from the cited reports, not tried.
+
+### 2026-11-26: JIT route de-risking (before Phase B)
+
+**Done from the Mac:**
+- **`tools/jitprobe`** (`com.aki.gearmulator.jitprobe`): built, development-signed (`get-task-allow` = true), **installed and running on both devices**. Each logged "waiting for a debugger".
+  - It runs the TXM handshake, checks the region, maps a writable alias, detaches, then runs a generated function and patches it.
+  - The first build crashed at launch on iOS 27. UIKit traps apps that have not adopted the scene lifecycle (`_UIApplicationEvaluateRuntimeIssueForNoSceneLifecycleAdoption`). The probe now has a scene manifest; **the Monomachine app will need one too.**
+- **StikDebug, built from source** (commit `63713ea`), signed as `com.aki.stikdebug`, **installed on both devices**. The only change: an unused App Group entitlement belonging to another team was removed.
+- **`doc/JIT_SETUP.md`** lists the steps that need you.
+- `iloader.app` is already on this Mac.
+
+**Blocked on you** (all on the device, or one click in iloader):
+1. Install LocalDevVPN from the App Store.
+2. Place a pairing file: in StikDebug (Settings → Pair a Device), or with iloader → Manage Pairing File → Place.
+3. Mount the disk image: open StikDebug, force-quit, reopen.
+4. Enable JIT for JIT Probe and report PASS/FAIL.
+
+The first real answer on whether the JIT route works on 27.0 (iPad) and 27.2.1 (iPhone) comes from step 4.
