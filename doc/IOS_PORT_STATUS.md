@@ -548,3 +548,17 @@ then `--target mmBenchIOS`.
 - **Bundle:** contains no 8 MiB file.
 
 **Not yet measured:** the on-device result (hash and rtf for each engine). It needs a run with StikDebug, steps in `doc/JIT_SETUP.md`.
+
+**Desktop check after the bench and iOS glue changes:** `scripts/verify-interp.sh`, logs `build/verify/verify-interp/20261126-225207`.
+
+**Pass:**
+- `jit.unchanged.md` and `jit.unchanged.mm` (`bdb35c9d…`, `6adf0ea7…`).
+- `dsp56kTestRunner` exit 0 in both builds.
+- `ctest.mdLib.jit` 89/89, now parsed correctly.
+- Interpreter hashes unchanged: MD `bdb35c9d…` (== JIT), MM `0863f46b…`.
+
+**Fail, all known before this work:** the interpreter's counters differ from the JIT's, MM's interpreter hash differs from the JIT's, and `ctest.mdLib.interp` is 86/89 (`mmSine`, `mmSineMidi`, `mmDigipro`). So `RESULT` is FAIL.
+
+**Next:**
+1. Run MM Bench on both devices, JIT and interpreter (steps in `doc/JIT_SETUP.md`), and record hash and rtf here.
+2. If the device JIT hash matches `6adf0ea75100b8c3`, start Phase C (the standalone MM app with Files import and the engine badge) on the same runtime-engine build.
