@@ -693,7 +693,7 @@ Your screenshots, untethered, JIT through StikDebug. Full MM `trigPressFirmwareT
   - Real time 2.24x, 187 emulated blocks/s, output peak 0.87, and "JIT is running";
   - iOS Audio, Speaker 1 + 2, 48000 Hz;
   - MIDI inputs, plus JUCE's own "Bluetooth MIDI" button (present on the device, absent in the Simulator), and the MIDI output.
-- **Small issue:** the buffer-size box is blank on the device, because the session's 257-frame IO buffer is not one of JUCE's listed sizes.
+- **Buffer-size box (fixed, commit below):** it was blank on the device, because the session's 257-frame IO buffer is not one of JUCE's listed sizes. The settings page now adds the session's size to the box and selects it. Device screenshot: "257 samples (5.4 ms), set by iOS".
 
 **ROM import, run on the iPad** (the same code as the Files picker, through `GEARMULATOR_IOS_IMPORT_TEST`; verdicts from engine.log)
 - `import-test/junk.bin` (1 KiB): **REJECTED**, "is 1024 bytes, not the 8 MiB (8,388,608 bytes) Monomachine OS 1.32b image".

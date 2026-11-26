@@ -320,7 +320,7 @@ namespace mdJucePlugin
 					auto selector = std::make_unique<juce::AudioDeviceSelectorComponent>(holder->deviceManager,
 						0, 0, 0, 2, true, true, true, false);
 					selector->setItemHeight(40);
-					m_column.add(std::move(selector));
+					m_selector = &m_column.add(std::move(selector));
 				}
 				text("Output, sample rate and buffer size, then the MIDI inputs and the MIDI output. Bluetooth MIDI "
 					"devices appear there once paired.");
@@ -389,6 +389,35 @@ namespace mdJucePlugin
 
 			void timerCallback() override { update(); }
 
+			// iOS picks the IO buffer itself (257 frames on the iPad at 48 kHz) and JUCE lists only powers of two, so its
+			// buffer-size box showed nothing. Add the session's size to the box and select it, without a change message.
+			void showSessionBufferSize()
+			{
+				auto* holder = juce::StandalonePluginHolder::getInstance();
+				auto* device = holder ? holder->deviceManager.getCurrentAudioDevice() : nullptr;
+				if(!m_selector || !device)
+					return;
+				const int current = device->getCurrentBufferSizeSamples();
+				const double rate = device->getCurrentSampleRate();
+				if(current <= 0 || rate <= 0)
+					return;
+				std::function<void(juce::Component&)> visit = [&](juce::Component& _parent)
+				{
+					for(auto* child : _parent.getChildren())
+					{
+						auto* box = dynamic_cast<juce::ComboBox*>(child);
+						if(box && box->getNumItems() > 0 && box->getItemText(0).contains("samples") && box->getSelectedId() != current)
+						{
+							if(box->indexOfItemId(current) < 0)
+								box->addItem(juce::String(current) + " samples (" + juce::String(current * 1000.0 / rate, 1) + " ms), set by iOS", current);
+							box->setSelectedId(current, juce::dontSendNotification);
+						}
+						visit(*child);
+					}
+				};
+				visit(*m_selector);
+			}
+
 			static void setAllRegionsLocked(const bool _lock)
 			{
 				auto* p = processor();
@@ -426,6 +455,7 @@ namespace mdJucePlugin
 					? juce::String::formatted("Below real time (%.2fx): the tempo slows down and the sound breaks up. Relaunch with JIT.", rtf)
 					: juce::String(), g_warn);
 				m_jitStatus->setText(g_jitStatusText, g_jitStatusColour);
+				showSessionBufferSize();
 				if(auto* p = processor())
 				{
 					m_diagButton->setButtonText(p->performanceDiagnosticsActive() ? "Stop performance capture" : "Start performance capture");
@@ -530,6 +560,7 @@ namespace mdJucePlugin
 			TextBlock* m_jitStatus = nullptr;
 			TextBlock* m_romStatus = nullptr;
 			juce::TextButton* m_jitButton = nullptr;
+			juce::AudioDeviceSelectorComponent* m_selector = nullptr;
 			juce::TextButton* m_diagButton = nullptr;
 			TextBlock* m_diagStatus = nullptr;
 			juce::TextButton* m_ramComplete = nullptr;
