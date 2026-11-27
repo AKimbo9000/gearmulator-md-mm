@@ -6,6 +6,9 @@
 #include <signal.h>
 #include <unistd.h>
 
+#include <sys/proc.h>
+#include <sys/sysctl.h>
+
 #include <mach/mach.h>
 #include <mach/vm_map.h>
 
@@ -47,6 +50,16 @@ bool stikIsDebugged()
 	return (flags & g_csDebugged) != 0;
 }
 
+bool stikIsTraced()
+{
+	int mib[4] = {CTL_KERN, KERN_PROC, KERN_PROC_PID, getpid()};
+	kinfo_proc info{};
+	size_t size = sizeof(info);
+	if(sysctl(mib, 4, &info, &size, nullptr, 0) != 0 || size != sizeof(info))
+		return false;
+	return (info.kp_proc.p_flag & P_TRACED) != 0;
+}
+
 bool stikAcquireRegion(const size_t _size, void*& _rx, void*& _rw, std::string& _reason)
 {
 	if(!stikIsDebugged()) { _reason = "not debugged (StikDebug has not enabled JIT)"; return false; }
@@ -57,16 +70,34 @@ bool stikAcquireRegion(const size_t _size, void*& _rx, void*& _rw, std::string& 
 	sigemptyset(&sa.sa_mask);
 	sigaction(SIGTRAP, &sa, nullptr);
 
+	// set by onTrap when no debugger answered; cleared per request, or one unanswered request (the load-time retries
+	// after a list launch without a script) would reject every later answered one
+	g_trapped = 0;
 	const uintptr_t rx = stikBreak(1, 0, _size);
-	if(g_trapped || rx == 0 || rx == g_brkEncoding) { _reason = "StikDebug did not service the prepare request (no universal.js script?)"; return false; }
-	if(rx & (16 * 1024 - 1)) { _reason = "prepared region is not 16 KiB aligned"; return false; }
+	if(g_trapped) { _reason = "StikDebug did not service the prepare request (no universal.js script?)"; return false; }
+
+	// A debugger answered. Every failure from here on still sends the detach request: universal.js stays attached
+	// until it gets one, and would prepare another region for each retry.
+	const auto fail = [&_reason](const char* _why)
+	{
+		stikBreak(0, 0, 0);
+		_reason = _why;
+		return false;
+	};
+	if(rx == 0 || rx == g_brkEncoding)
+		return fail("the debugger answered the prepare request without a region");
+	if(rx & (16 * 1024 - 1))
+		return fail("prepared region is not 16 KiB aligned");
 
 	vm_address_t rw = 0;
 	vm_prot_t cur = 0, max = 0;
 	if(vm_remap(mach_task_self(), &rw, _size, 0, VM_FLAGS_ANYWHERE, mach_task_self(), rx, FALSE, &cur, &max, VM_INHERIT_NONE) != KERN_SUCCESS)
-		{ _reason = "vm_remap of the region failed"; return false; }
+		return fail("vm_remap of the region failed");
 	if(vm_protect(mach_task_self(), rw, _size, FALSE, VM_PROT_READ | VM_PROT_WRITE) != KERN_SUCCESS)
-		{ _reason = "vm_protect of the alias failed"; return false; }
+	{
+		vm_deallocate(mach_task_self(), rw, _size);
+		return fail("vm_protect of the alias failed");
+	}
 
 	stikBreak(0, 0, 0);		// detach: all executable memory has been prepared
 

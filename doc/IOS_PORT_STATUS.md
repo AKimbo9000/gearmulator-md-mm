@@ -683,6 +683,48 @@ Your screenshots, untethered, JIT through StikDebug. Full MM `trigPressFirmwareT
 - **JUCE standalone menu:** Audio/MIDI Settings… (output device, sample rate, buffer size, MIDI inputs), Save current state…, Load a saved state…, Reset to default state.
 - **New for iOS:** engine badge and reason, Relaunch with JIT, interpreter warning, ROM import from Files with validation, a test tone, Bluetooth MIDI pairing.
 
+### 2026-11-28 (morning): MM asks StikDebug again when its Enable JIT list started it without a script (built and reviewed; iPhone check pending)
+
+**What it does:** Gearmulator MM may be launched from StikDebug's Enable JIT list with no script assigned (the 2026-11-27 late-evening entry): `debugged=1`, nothing answered the request, and the debugger has gone. Then MM opens `stikdebug://enable-jit?bundle-id=…&pid=…&script-name=universal.js` itself, once per run. That is the URL of Settings › Relaunch with JIT.
+- StikDebug asks the user to confirm (its `confirmExternalJITRequests` defaults to on).
+- It attaches with universal.js. MM's watcher requests the region and recreates the device on the JIT.
+- StikDebug then returns to MM (`relaunchApp` with kill_existing=false, so the process is kept).
+
+**Code** (`source/elektron/md/mdJucePlugin/`):
+- **`stikIsTraced()`** (`stikjit.cpp`): `P_TRACED` from `sysctl(KERN_PROC_PID)`, meaning a debugger is attached right now. `CS_DEBUGGED` stays set after a detach, so it cannot show a second attach.
+- **`tusChooseEngine`:** sets `launchedWithoutScript = debugged && !acquired && !traced`, with `traced` read before the first request. The `launch:` line now includes `traced=`.
+- **Watcher:**
+  - It requests on the `CS_DEBUGGED` edge, as before, and also on every `P_TRACED` 0→1 edge.
+  - It asks StikDebug again only if StikDebug runs scripts on the device. That uses StikDebug's own TXM rule (`ProcessInfo+TXM.swift`): on iOS 27 every device except iPad8,11/12. Otherwise it only shows a status.
+- **`requestJitFromStikDebugWhenActive`:** opens the URL only while the app is active, otherwise on the next `UIApplicationDidBecomeActiveNotification`. It skips the URL if by then the JIT is active or a debugger is attached.
+
+**Review** (a workflow with three lenses: state machine, iOS API and threading, failure modes; each finding then checked by a skeptic). Five findings were confirmed, two refuted, and all five are fixed:
+1. **High: `g_trapped` in `stikAcquireRegion` was never cleared.** One request that reached the app's own SIGTRAP handler made every later request fail, even one universal.js answered. In that case the function also returned before sending the detach, so the script stayed attached and prepared another 16 MiB region on each of the 50 retries.
+   - **New path:** it could never have worked.
+   - **Paths that already existed:** it broke the constructor's retries when StikDebug answers late, and any watcher request after a launch whose request trapped. A launch without a debugger never issues the trapping request, which is why Relaunch with JIT after a normal launch worked.
+   - **Fix:** the flag is cleared before each request. Once a debugger has answered, every later failure still sends the detach.
+2. **Low:** `launchedWithoutScript` also counted a debugger that was attached at load but did not answer. Fixed with `!traced`.
+3. **Low:** a deferred request could open StikDebug after the JIT had been enabled another way. Fixed: the state is re-checked before opening.
+4. **Low:** on devices without TXM, StikDebug runs no script, so asking again would only switch apps. Fixed with the TXM rule above.
+
+**Measured so far:**
+- **Device build** (`build/ios-mm`, ThinLTO, OPTIMIZE_DSP, PGO use): succeeds.
+- **`P_TRACED` on the iPhone with LLDB attached** (`build/device-runs/iphone-autoreq-lldb-194825/engine.log`): `launch: JIT (StikDebug) use_jit=1 debugged=1 traced=1 … serviced after 1 attempt(s)`. That was the first version of the change; the flag read is the same now.
+- **Not yet verified on the device:**
+  - **The list path itself:** it needs the user at the phone.
+  - **An emulated list launch:** start MM stopped, then LLDB attach and detach without answering. It was refused at 08:49 because the iPhone was locked ("Unable to launch … the device was not, or could not be, unlocked", `build/device-runs/iphone-autoreq-emul-084949/launch.json`).
+
+**Next (needs the user at the iPhone):**
+1. In StikDebug › Enable JIT, touch and hold Gearmulator MM › Reset Script. universal.js is assigned on the iPhone (`BundleScriptMap`), which would skip the new path.
+2. Tap Gearmulator MM, then tap Allow when StikDebug opens.
+
+Expected in `engine.log`, in order:
+1. `launch: Interpreter … debugged=1 traced=0`
+2. `auto-request: … opened`
+3. `watcher: debugger attached (P_TRACED set)`
+4. `region acquired`
+5. `switch: device recreated on the JIT`
+
 ### 2026-11-28: the panel works like the hardware with fingers; weighty knob curve; FUNCTION labels only with a pointer
 
 **User request:** knobs that feel smoother and weightier, like professional iOS plugins. A panel that works like the real machine with multi-touch: hold FUNCTION with one finger and press another key with a second finger. No touchable FUNCTION labels, except on an iPad with a mouse or trackpad.

@@ -611,7 +611,28 @@ namespace mdJucePlugin
 		// JIT detection after launch. StikDebug can attach once the app runs (Relaunch with JIT, or its own Enable JIT on
 		// the running app), or attach at launch but answer the prepare request only after the load-time handshake gave
 		// up. Either way the DSPs move to the JIT: the region is requested, then the device is recreated with audio
-		// stopped (its state carries over). One attempt per attach.
+		// stopped (its state carries over). One request per attach: CS_DEBUGGED (debugged()) is set by the first attach
+		// and stays set after a detach, so a later attach shows as P_TRACED (traced()) turning on.
+		//
+		// StikDebug's Enable JIT list starts an app that has no script assigned, attaches and detaches at once
+		// (doc/JIT_SETUP.md): the app is debugged at launch, nothing answered its request, and no debugger is attached
+		// any more. Then the app asks StikDebug again itself, once per run, with the URL of Relaunch with JIT, which names
+		// universal.js; StikDebug's second attach is a P_TRACED edge.
+		void requestJitAgain()
+		{
+			tusEngine::log("auto-request: StikDebug launched this app without its script and detached; asking it again with universal.js");
+			juce::MessageManager::callAsync([]
+			{
+				setJitStatus("StikDebug started this app without its universal.js script. Asking StikDebug again...", g_secondary);
+				tusEngine::requestJitFromStikDebugWhenActive([](const bool _opened)
+				{
+					tusEngine::log(std::string("auto-request: StikDebug ") + (_opened ? "opened" : "did not open"));
+					setJitStatus(_opened ? "Waiting for StikDebug to attach..." : "StikDebug did not open. Is it installed?",
+						_opened ? g_secondary : g_warn);
+				});
+			});
+		}
+
 		void startJitWatcher()
 		{
 			static bool started = false;
@@ -620,21 +641,47 @@ namespace mdJucePlugin
 			started = true;
 			std::thread([]
 			{
-				bool tried = false;
+				bool tried = false;				// a request was made since CS_DEBUGGED turned on
+				bool wasTraced = false;
+				bool askedAgain = false;
 				while(!tusEngine::jitActive())
 				{
 					std::this_thread::sleep_for(std::chrono::milliseconds(500));
+					const bool traced = tusEngine::traced();
+					const bool attached = traced && !wasTraced;
+					wasTraced = traced;
 					if(!tusEngine::debugged())
 					{
 						tried = false;
 						continue;
 					}
-					if(tried)
+					if(!askedAgain && !traced && tusEngine::launchedWithoutScript())
+					{
+						askedAgain = true;
+						tried = true;			// the load-time handshake asked already and the debugger has gone
+						if(tusEngine::stikDebugRunsScripts())
+						{
+							requestJitAgain();
+						}
+						else
+						{
+							tusEngine::log("auto-request: not asking StikDebug again, it runs no scripts on this device");
+							juce::MessageManager::callAsync([]
+							{
+								setJitStatus("StikDebug attached without its universal.js script, and it runs scripts only on TXM devices.", g_warn);
+							});
+						}
+						continue;
+					}
+					if(tried && !attached)
 						continue;
 					tried = true;
-					tusEngine::log("watcher: debugger attached, requesting the region");
+					tusEngine::log(std::string("watcher: debugger attached (") + (attached ? "P_TRACED set" : "CS_DEBUGGED set") +
+						"), requesting the region");
 					std::string reason;
 					const bool acquired = tusEngine::acquireJitRegion(reason);
+					// a debugger that did not answer may still be attached: the next request waits for a new attach
+					wasTraced = tusEngine::traced();
 					tusEngine::log(std::string("watcher: region ") + (acquired ? "acquired, " : "not acquired, ") + reason);
 					if(!acquired)
 					{

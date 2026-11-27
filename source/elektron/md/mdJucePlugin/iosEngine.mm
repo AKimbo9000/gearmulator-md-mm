@@ -13,10 +13,12 @@
 #include "dsp56kEmu/jitstats.h"
 #include "mdLib/mdhardware.h"
 
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <chrono>
 #include <thread>
+#include <sys/utsname.h>
 #include <unistd.h>
 #include <atomic>
 #include <cstring>
@@ -29,6 +31,7 @@ namespace
 	// constant-initialised, so nothing depends on the order of static initialisers and load-time constructors; a
 	// new description leaks the old one, which another thread may still be reading (at most one switch per run)
 	std::atomic<const char*> g_engineDescription{""};
+	std::atomic<bool> g_launchedWithoutScript{false};
 	void setEngineDescription(const std::string& _text)
 	{
 		g_engineDescription = strdup(_text.c_str());
@@ -116,6 +119,7 @@ __attribute__((constructor)) static void tusChooseEngine()
 	g_tusOffloadRealtime = &offloadRealtime;
 
 	const bool debugged = stikIsDebugged();
+	const bool traced = stikIsTraced();		// before the first request: a request that is answered detaches the debugger
 	void* rx = nullptr;
 	void* rw = nullptr;
 	std::string reason;
@@ -131,15 +135,20 @@ __attribute__((constructor)) static void tusChooseEngine()
 	}
 	if(acquired)
 		reason = "serviced after " + std::to_string(attempts) + " attempt(s)";
+	// debugged at launch, nothing answered, and the debugger had gone before the first request: StikDebug's list without
+	// a script (vAttach and D before the app resumes). A debugger still attached here is a session that did not answer.
+	g_launchedWithoutScript = debugged && !acquired && !traced;
 	if(acquired && dsp56k::JitCodeRegion::install(rx, rw, g_regionSize))
 	{
 		dsp56k::g_runtimeUseJIT = true;
-		std::snprintf(buf, sizeof(buf), "JIT (StikDebug) use_jit=1 debugged=1 region=%p alias=%p 16MiB %s", rx, rw, reason.c_str());
+		std::snprintf(buf, sizeof(buf), "JIT (StikDebug) use_jit=1 debugged=1 traced=%d region=%p alias=%p 16MiB %s", traced ? 1 : 0, rx,
+			rw, reason.c_str());
 	}
 	else
 	{
 		dsp56k::g_runtimeUseJIT = false;
-		std::snprintf(buf, sizeof(buf), "Interpreter (below real time) use_jit=0 debugged=%d reason=%s", debugged ? 1 : 0, reason.c_str());
+		std::snprintf(buf, sizeof(buf), "Interpreter (below real time) use_jit=0 debugged=%d traced=%d reason=%s", debugged ? 1 : 0,
+			traced ? 1 : 0, reason.c_str());
 	}
 	setEngineDescription(buf);
 	tusEngine::log(std::string("launch: ") + buf);
@@ -149,6 +158,8 @@ namespace tusEngine
 {
 	bool jitActive() { return dsp56k::g_runtimeUseJIT; }
 	bool debugged() { return stikIsDebugged(); }
+	bool traced() { return stikIsTraced(); }
+	bool launchedWithoutScript() { return g_launchedWithoutScript; }
 
 	void requestJitFromStikDebug(std::function<void(bool)> _done)
 	{
@@ -160,6 +171,61 @@ namespace tusEngine
 			if(*done)
 				(*done)(ok);
 		}];
+	}
+
+	bool stikDebugRunsScripts()
+	{
+		// StikDebug/Support/ProcessInfo+TXM.swift (commit 63713ea), including its way of turning "iPhone14,2" into 14.2
+		utsname name{};
+		uname(&name);
+		const std::string machine = name.machine;
+		NSProcessInfo* info = NSProcessInfo.processInfo;
+		if([info isOperatingSystemAtLeastVersion:{27, 0, 0}])
+			return machine != "iPad8,11" && machine != "iPad8,12";
+		if(![info isOperatingSystemAtLeastVersion:{26, 0, 0}])
+			return false;
+		const bool iPad = machine.rfind("iPad", 0) == 0;
+		const bool iPhone = machine.rfind("iPhone", 0) == 0;
+		int major = 0, minor = 0;
+		if((!iPad && !iPhone) || std::sscanf(machine.c_str() + (iPad ? 4 : 6), "%d,%d", &major, &minor) != 2)
+			return false;
+		const double version = major + minor / std::pow(10.0, static_cast<double>(std::to_string(minor).size()));
+		return version >= (iPad ? 14.5 : 14.2);
+	}
+
+	void requestJitFromStikDebugWhenActive(std::function<void(bool)> _done)
+	{
+		auto done = std::make_shared<std::function<void(bool)>>(std::move(_done));
+		// by the time the app is active StikDebug may have attached some other way (its own Enable JIT on the running
+		// app): then opening it again would only switch apps, and leave a session waiting for a request that never comes
+		const auto open = [done]
+		{
+			if(dsp56k::g_runtimeUseJIT || stikIsTraced())
+			{
+				tusEngine::log(std::string("auto-request: not opening StikDebug, ") + (dsp56k::g_runtimeUseJIT ? "the JIT is active" : "a debugger is attached"));
+				return;
+			}
+			requestJitFromStikDebug(*done);
+		};
+		dispatch_async(dispatch_get_main_queue(), ^
+		{
+			if(UIApplication.sharedApplication.applicationState == UIApplicationStateActive)
+			{
+				open();
+				return;
+			}
+			tusEngine::log("auto-request: waiting for the app to become active");
+			__block id observer = nil;
+			observer = [NSNotificationCenter.defaultCenter addObserverForName:UIApplicationDidBecomeActiveNotification
+				object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification*)
+			{
+				if(!observer)
+					return;
+				[NSNotificationCenter.defaultCenter removeObserver:observer];
+				observer = nil;
+				open();
+			}];
+		});
 	}
 
 	bool acquireJitRegion(std::string& _reason)
