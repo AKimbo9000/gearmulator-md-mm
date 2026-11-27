@@ -57,6 +57,10 @@ std::string tusAudioSessionDescription();
 uint32_t (*g_tusTransportCounter)() = nullptr;
 // set by the instrument: bytes of JIT code emitted so far (0 without a JIT), so the meter can tell compile spikes apart
 uint64_t (*g_tusJitCodeBytes)() = nullptr;
+// set by the instrument: the JIT's compile totals (dsp56kEmu/jitstats.h order: emit ns, blocks, codegen ns, finalize ns,
+// add ns, new-chain ns, chains), so a late block shows what its compiling cost
+constexpr int g_jitStatCount = 7;
+void (*g_tusJitStats)(uint64_t*) = nullptr;
 // the last one-second readings of the meter below, for the iOS settings sheet
 void tusRealtimeLast(double& _rtf, double& _callbacksPerSecond, double& _peak);
 // mixes a quiet 440 Hz tone into the output for _seconds (Settings > Audio > Test tone)
@@ -75,7 +79,7 @@ double tusOffloadCushionMs();
 double tusOffloadActiveCushionMs();
 namespace
 {
-	struct OffloadStats { bool active; uint64_t ioCallbacks; uint64_t ioUnderruns; };
+	struct OffloadStats { bool active; uint64_t ioCallbacks; uint64_t ioUnderruns; uint64_t restartsCarried; };
 	OffloadStats offloadStats();
 	std::atomic<double> g_offloadCushionMs{25.0};
 	std::atomic<double> g_offloadActiveCushionMs{0.0};
@@ -103,7 +107,7 @@ namespace
 		std::atomic<uint64_t> maxBlockNs{0};		// longest block since the last log line
 		// every block that took longer than its duration, for the log: when, how long, how much of it the thread was on
 		// a CPU (a much smaller CPU time means it waited for a lock or was preempted), and how long after the last Play
-		struct UnderrunEvent { int64_t atNs; uint64_t wallNs, cpuNs, budgetNs; int64_t sincePlayNs; uint32_t play; uint64_t codeBytes; };
+		struct UnderrunEvent { int64_t atNs; uint64_t wallNs, cpuNs, budgetNs; int64_t sincePlayNs; uint32_t play; uint64_t codeBytes; uint64_t jit[g_jitStatCount]; };
 		static constexpr uint32_t MaxEvents = 256;
 		UnderrunEvent events[MaxEvents]{};
 		std::atomic<uint32_t> eventCount{0};
@@ -167,9 +171,10 @@ namespace
 					for(const uint32_t n = std::min(eventCount.load(std::memory_order_acquire), MaxEvents); eventsPrinted < n; ++eventsPrinted)
 					{
 						const auto& e = events[eventsPrinted];
-						std::fprintf(f, "late_block at=%.3fs block=%.2fms cpu=%.2fms budget=%.2fms jit_code_emitted=%lluB since_play=%s%.3fs play=%u\n",
+						std::fprintf(f, "late_block at=%.3fs block=%.2fms cpu=%.2fms budget=%.2fms jit_code_emitted=%lluB jit_emit=%.2fms blocks=%llu codegen=%.2fms finalize=%.2fms add=%.2fms new_chains=%llu/%.2fms since_play=%s%.3fs play=%u\n",
 							double(e.atNs) * 1e-9, double(e.wallNs) * 1e-6, double(e.cpuNs) * 1e-6, double(e.budgetNs) * 1e-6,
-							(unsigned long long)e.codeBytes,
+							(unsigned long long)e.codeBytes, double(e.jit[0]) * 1e-6, (unsigned long long)e.jit[1], double(e.jit[2]) * 1e-6,
+							double(e.jit[3]) * 1e-6, double(e.jit[4]) * 1e-6, (unsigned long long)e.jit[6], double(e.jit[5]) * 1e-6,
 							e.sincePlayNs < 0 ? "none " : "", e.sincePlayNs < 0 ? 0.0 : double(e.sincePlayNs) * 1e-9, e.play);
 					}
 					for(const uint32_t n = std::min(ioEventCount.load(std::memory_order_acquire), MaxEvents); ioEventsPrinted < n; ++ioEventsPrinted)
@@ -180,12 +185,13 @@ namespace
 							e.sincePlayNs < 0 ? "none " : "", e.sincePlayNs < 0 ? 0.0 : double(e.sincePlayNs) * 1e-9, e.play);
 					}
 					const double maxBlockMs = double(maxBlockNs.exchange(0)) * 1e-6;
-					std::fprintf(f, "t=%llu window_rtf=%.3f min_rtf=%.3f max_block_ms=%.2f callbacks_per_s=%llu avg_block=%.0f samplerate=%.0f peak=%.5f late_blocks=%llu late_blocks_since_play=%llu offload=%d offload_rt=%d cushion_ms=%.1f io_callbacks_per_s=%llu io_underruns=%llu io_underruns_since_play=%llu jit_code_bytes=%llu\n",
+					std::fprintf(f, "t=%llu window_rtf=%.3f min_rtf=%.3f max_block_ms=%.2f callbacks_per_s=%llu avg_block=%.0f samplerate=%.0f peak=%.5f late_blocks=%llu late_blocks_since_play=%llu offload=%d offload_rt=%d cushion_ms=%.1f io_callbacks_per_s=%llu io_underruns=%llu io_underruns_since_play=%llu restarts_carried=%llu jit_code_bytes=%llu\n",
 						(unsigned long long)t, rtf, minRtf < 1e8 ? minRtf : 0.0, maxBlockMs, (unsigned long long)(b - lastBlocks),
 						b > lastBlocks ? double(sm - lastSamples) / double(b - lastBlocks) : 0.0, sampleRate.load(), peak,
 						(unsigned long long)u, (unsigned long long)underrunsSincePlay, off.active ? 1 : 0, g_offloadRealtimeActive.load() ? 1 : 0, g_offloadActiveCushionMs.load(),
 						(unsigned long long)(off.ioCallbacks - lastIo), (unsigned long long)off.ioUnderruns,
 						(unsigned long long)(off.ioUnderruns - std::min(ioUnderrunsAtPlay.load(), off.ioUnderruns)),
+						(unsigned long long)off.restartsCarried,
 						(unsigned long long)(g_tusJitCodeBytes ? g_tusJitCodeBytes() : 0));
 					lastIo = off.ioCallbacks;
 					std::fflush(f);
@@ -207,6 +213,8 @@ namespace
 		{
 			g_iosMeter.start();
 			g_iosMeter.sampleRate = _rate;
+			if(g_tusJitStats)
+				g_tusJitStats(m_jitStart);
 		}
 		~IosMeterScope()
 		{
@@ -238,6 +246,11 @@ namespace
 					auto& e = m.events[i];
 					e.atNs = startNs;
 					e.codeBytes = (g_tusJitCodeBytes ? g_tusJitCodeBytes() : 0) - m_codeStart;
+					uint64_t jitNow[g_jitStatCount]{};
+					if(g_tusJitStats)
+						g_tusJitStats(jitNow);
+					for(int k = 0; k < g_jitStatCount; ++k)
+						e.jit[k] = jitNow[k] - m_jitStart[k];
 					e.wallNs = ns;
 					e.cpuNs = clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID) - m_cpuStart;
 					e.budgetNs = m_audioNs;
@@ -277,6 +290,7 @@ namespace
 		std::chrono::steady_clock::time_point m_start;
 		uint64_t m_cpuStart;
 		uint64_t m_codeStart;
+		uint64_t m_jitStart[g_jitStatCount]{};
 		uint64_t m_audioNs;
 	};
 }
@@ -313,8 +327,31 @@ namespace
 			stop();
 			if(!g_tusOffloadProcessing || !g_tusOffloadProcessing())
 				return;
+			// iOS restarts the audio device when its stream format changes, also while playing (seen on the iPhone: the IO
+			// buffer went from 257 to 253 frames 20 s after Play, and the callbacks after the restart found the queue
+			// empty). The audio already queued, and the MIDI not yet delivered, are kept across a restart with the same
+			// sample rate and channels, so the output continues from the cushion while the worker resumes.
+			const int channels = std::max(1, _channels);
+			const bool carry = m_ringRate > 0 && m_ringRate == _sampleRate && m_channels == channels && m_fifo.getNumReady() > 0;
+			juce::AudioBuffer<float> carried;
+			if(carry)
+			{
+				const int n = m_fifo.getNumReady();
+				carried.setSize(channels, n);
+				int s1, n1, s2, n2;
+				m_fifo.prepareToRead(n, s1, n1, s2, n2);
+				for(int c = 0; c < channels; ++c)
+				{
+					if(n1 > 0)
+						carried.copyFrom(c, 0, m_ring, c, s1, n1);
+					if(n2 > 0)
+						carried.copyFrom(c, n1, m_ring, c, s2, n2);
+				}
+				m_fifo.finishedRead(n1 + n2);
+			}
 			m_processor = &_processor;
-			m_channels = std::max(1, _channels);
+			m_channels = channels;
+			m_ringRate = _sampleRate;
 			m_maxBlock = std::max(32, _maxBlock);
 			// the worker keeps the ring filled to within one block of its capacity, so this much audio beyond the block
 			// being played is queued when a block starts: a block may take that much longer than its duration
@@ -325,12 +362,28 @@ namespace
 			m_ring.clear();
 			m_fifo.setTotalSize(capacity + 1);
 			m_fifo.reset();
+			if(carry)
+			{
+				const int n = std::min(carried.getNumSamples(), capacity);
+				int s1, n1, s2, n2;
+				m_fifo.prepareToWrite(n, s1, n1, s2, n2);
+				for(int c = 0; c < m_channels; ++c)
+				{
+					if(n1 > 0)
+						m_ring.copyFrom(c, s1, carried, c, 0, n1);
+					if(n2 > 0)
+						m_ring.copyFrom(c, s2, carried, c, n1, n2);
+				}
+				m_fifo.finishedWrite(n1 + n2);
+				++m_restartsCarried;
+			}
 			m_work.setSize(m_channels, m_maxBlock);
 			m_periodNs = _sampleRate > 0 ? 1e9 * double(m_maxBlock) / _sampleRate : 0.0;
 			m_realtime = m_periodNs > 0 && g_tusOffloadRealtime && g_tusOffloadRealtime();
 			for(auto* b : {&m_midiIn, &m_midiWork, &m_midiOut, &m_ioCarry})
 			{
-				b->clear();
+				if(!carry)
+					b->clear();
 				b->ensureSize(16384);
 			}
 			m_ioBlock = 0;
@@ -414,7 +467,7 @@ namespace
 			return true;
 		}
 
-		OffloadStats stats() const { return {m_active.load(), m_ioCallbacks.load(), m_ioUnderruns.load()}; }
+		OffloadStats stats() const { return {m_active.load(), m_ioCallbacks.load(), m_ioUnderruns.load(), m_restartsCarried.load()}; }
 
 	private:
 		void run()
@@ -484,6 +537,8 @@ namespace
 		int m_maxBlock = 0;
 		double m_periodNs = 0;
 		bool m_realtime = false;
+		double m_ringRate = 0;					// sample rate of the audio in the ring
+		std::atomic<uint64_t> m_restartsCarried{0};
 		std::atomic<int> m_ioBlock{0};
 		std::atomic<bool> m_active{false};
 		bool m_quit = false;

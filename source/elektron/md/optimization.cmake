@@ -2,6 +2,9 @@
 # exist. Defaults preserve the ordinary build on every platform.
 option(GEARMULATOR_MDMM_APPLE_THINLTO
 	"Enable Apple Clang ThinLTO for MD/MM core Release builds" OFF)
+option(GEARMULATOR_MDMM_APPLE_PGO_DSP
+	"Apply the PGO profile to dsp56kEmu/dsp56kBase too when GEARMULATOR_MDMM_APPLE_OPTIMIZE_DSP is ON. iOS turns it off: \
+the JIT compiler is cold in any training run, PGO optimises it for size, and its first-Play compile got 15% slower" ON)
 option(GEARMULATOR_MDMM_APPLE_OPTIMIZE_DSP
 	"Include DSP libraries in the selected MD/MM Apple optimizations" OFF)
 set(GEARMULATOR_MDMM_APPLE_PGO_MODE "none" CACHE STRING
@@ -179,11 +182,24 @@ if(GEARMULATOR_MDMM_APPLE_OPTIMIZE_DSP)
 	list(APPEND _mdmm_optimization_targets dsp56kEmu dsp56kBase)
 endif()
 
+# an instrumented iOS app writes its profile on request (mdJucePlugin/iosEngine.mm), since devicectl stops it
+if(GEARMULATOR_MDMM_APPLE_PGO_MODE STREQUAL "generate")
+	foreach(_mdmm_plugin mdJucePlugin mmJucePlugin)
+		if(TARGET ${_mdmm_plugin})
+			target_compile_definitions(${_mdmm_plugin} PRIVATE GEARMULATOR_MDMM_PGO_GENERATE=1)
+		endif()
+	endforeach()
+endif()
+
 foreach(_mdmm_target IN LISTS _mdmm_optimization_targets)
 	target_compile_options(${_mdmm_target} PRIVATE "$<$<CONFIG:Release>:-flto=thin>")
 	# Static libraries propagate the matching options to their final consumer.
 	target_link_options(${_mdmm_target} INTERFACE "$<$<CONFIG:Release>:-flto=thin>")
-	if(_mdmm_pgo_option)
+	set(_mdmm_target_pgo "${_mdmm_pgo_option}")
+	if(NOT GEARMULATOR_MDMM_APPLE_PGO_DSP AND _mdmm_target MATCHES "^dsp56k")
+		set(_mdmm_target_pgo "")
+	endif()
+	if(_mdmm_target_pgo)
 		target_compile_options(${_mdmm_target} PRIVATE "$<$<CONFIG:Release>:${_mdmm_pgo_option}>")
 		target_link_options(${_mdmm_target} INTERFACE "$<$<CONFIG:Release>:${_mdmm_pgo_option}>")
 		if(GEARMULATOR_MDMM_APPLE_PGO_MODE STREQUAL "use")

@@ -10,9 +10,13 @@
 
 #include "dsp56kEmu/dsp.h"
 #include "dsp56kEmu/jitcoderegion.h"
+#include "dsp56kEmu/jitstats.h"
 #include "mdLib/mdhardware.h"
 
 #include <cstdio>
+#include <cstdlib>
+#include <chrono>
+#include <thread>
 #include <unistd.h>
 #include <atomic>
 #include <cstring>
@@ -32,11 +36,23 @@ namespace
 
 	uint32_t playPresses() { return md::g_playPresses.load(); }
 	uint64_t jitCodeBytes() { return dsp56k::JitCodeRegion::installed() ? dsp56k::JitCodeRegion::used() : 0; }
+	void jitStats(uint64_t* _out)
+	{
+		const auto& s = dsp56k::g_jitStats;
+		_out[0] = s.emitNs.load(std::memory_order_relaxed);
+		_out[1] = s.emitBlocks.load(std::memory_order_relaxed);
+		_out[2] = s.codegenNs.load(std::memory_order_relaxed);
+		_out[3] = s.finalizeNs.load(std::memory_order_relaxed);
+		_out[4] = s.addNs.load(std::memory_order_relaxed);
+		_out[5] = s.chainNs.load(std::memory_order_relaxed);
+		_out[6] = s.chains.load(std::memory_order_relaxed);
+	}
 }
 
 // read by the real-time meter in jucePluginLib (plain pointers: constant-initialised, no order issue)
 extern uint32_t (*g_tusTransportCounter)();
 extern uint64_t (*g_tusJitCodeBytes)();
+extern void (*g_tusJitStats)(uint64_t*);
 // jucePluginLib/processor.cpp: run the emulation off the real-time audio thread when this returns true
 extern bool (*g_tusOffloadProcessing)();
 extern bool (*g_tusOffloadRealtime)();
@@ -64,10 +80,38 @@ std::string tusAudioSessionDescription()
 	return d.UTF8String;
 }
 
+// Profile-guided optimisation (GEARMULATOR_MDMM_APPLE_PGO_MODE=generate, elektron/md/optimization.cmake): an
+// instrumented build writes its counters to Documents/mm-<pid>.profraw when GEARMULATOR_PGO_WRITE_SECONDS=N says how
+// long after launch, since an app stopped by devicectl never reaches the runtime's own write at exit. The counters
+// are call and branch counts of the emulator's code, nothing from the firmware. Only instrumented builds have the
+// profile runtime (optimization.cmake defines GEARMULATOR_MDMM_PGO_GENERATE for them).
+#if GEARMULATOR_MDMM_PGO_GENERATE
+extern "C" void __llvm_profile_set_filename(const char*);
+extern "C" int __llvm_profile_write_file(void);
+__attribute__((constructor)) static void tusSchedulePgoWrite()
+{
+	const char* seconds = std::getenv("GEARMULATOR_PGO_WRITE_SECONDS");
+	if(!seconds)
+		return;
+	NSString* docs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
+	static std::string path;
+	path = std::string(docs.UTF8String) + "/mm-" + std::to_string(getpid()) + ".profraw";
+	__llvm_profile_set_filename(path.c_str());
+	const int s = std::atoi(seconds);
+	std::thread([s]
+	{
+		std::this_thread::sleep_for(std::chrono::seconds(s));
+		const int r = __llvm_profile_write_file();
+		tusEngine::log("pgo: wrote " + path + " result " + std::to_string(r));
+	}).detach();
+}
+#endif
+
 __attribute__((constructor)) static void tusChooseEngine()
 {
 	g_tusTransportCounter = &playPresses;
 	g_tusJitCodeBytes = &jitCodeBytes;
+	g_tusJitStats = &jitStats;
 	g_tusOffloadProcessing = &offloadEmulation;
 	g_tusOffloadRealtime = &offloadRealtime;
 

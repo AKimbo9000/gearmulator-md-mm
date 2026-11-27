@@ -17,8 +17,8 @@ xcrun devicectl device install app --device "$udid" "$app" > "$out/install.txt" 
 pid=$(xcrun devicectl device info processes --device "$udid" 2>/dev/null | grep "Gearmulator MM.app" | awk '{print $1}' | head -1)
 [ -n "$pid" ] && xcrun devicectl device process terminate --device "$udid" --pid "$pid" > /dev/null 2>&1 && sleep 2
 
-# the app's test hooks: GEARMULATOR_MM_AUTOPLAY_SECONDS and every GEARMULATOR_IOS_* variable set here
-for v in GEARMULATOR_MM_AUTOPLAY_SECONDS $(compgen -e | grep '^GEARMULATOR_IOS_'); do
+# the app's test hooks: GEARMULATOR_MM_AUTOPLAY_SECONDS and every GEARMULATOR_IOS_* and GEARMULATOR_PGO_* variable set here
+for v in GEARMULATOR_MM_AUTOPLAY_SECONDS $(compgen -e | grep -E '^GEARMULATOR_(IOS|PGO)_'); do
 	[ -n "${!v:-}" ] && export "DEVICECTL_CHILD_$v=${!v}"
 done
 xcrun devicectl device process launch --start-stopped --device "$udid" --json-output "$out/launch.json" $bundle > /dev/null 2>&1
