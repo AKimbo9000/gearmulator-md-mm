@@ -683,6 +683,62 @@ Your screenshots, untethered, JIT through StikDebug. Full MM `trigPressFirmwareT
 - **JUCE standalone menu:** Audio/MIDI Settings… (output device, sample rate, buffer size, MIDI inputs), Save current state…, Load a saved state…, Reset to default state.
 - **New for iOS:** engine badge and reason, Relaunch with JIT, interpreter warning, ROM import from Files with validation, a test tone, Bluetooth MIDI pairing.
 
+### 2026-11-28: the panel works like the hardware with fingers; weighty knob curve; FUNCTION labels only with a pointer
+
+**User request:** knobs that feel smoother and weightier, like professional iOS plugins. A panel that works like the real machine with multi-touch: hold FUNCTION with one finger and press another key with a second finger. No touchable FUNCTION labels, except on an iPad with a mouse or trackpad.
+
+**Why the knobs felt twitchy:** a drag became detents linearly in RmlUi context pixels: MM 150 px per 100 detents.
+- Measured with `RML_POINTER_DIAGNOSTIC`: 3 px per point on the iPhone 17 Pro Max Simulator, 2 on the iPad Pro 13.
+- So one detent was 0.5 pt of finger travel on the iPhone and 0.75 pt on the iPad.
+- There was no dead zone, and the two axes were summed.
+
+**Why two fingers failed:** RmlUi has one pointer. A second finger's enter and down events moved it and released the first finger's key, through Mouseout and `releaseLostMouseButtons`.
+
+**What changed** (commits 0197cadf, 162cf2de7, c011d490, ebd9be76):
+- **`juceRmlUi/rmlTouchDrag.h`:** a header-only drag curve, with `juceRmlTouchDragTest` (21 checks pass).
+  - 6 pt dead zone; axis lock with a vertical bias; up and right increase.
+  - 4 pt per detent when slow, rising smoothly to 1.25 pt at speed; the speed estimate rises over 60 ms and falls over 30 ms.
+  - Soft cap of 240 detents/s; round to nearest with a quarter-detent hysteresis; no momentum.
+  - Chosen from three independent designs (velocity, physical weight, precision-first); the judge step did not run (usage limit), so I picked.
+- **`RmlComponent::setTouchHandler`:** on iOS each finger is offered to the editor first.
+  - A claimed finger's moves and lift never reach RmlUi.
+  - Unclaimed fingers share RmlUi's pointer: the first owns it, others are ignored.
+  - A finger whose lift was lost is released when the next one lands.
+- **`Editor::onPanelTouch`:**
+  - **Keys:** each finger holds its key until it lifts (no Mouseout release). Holds are counted per key and sent through a new `md::PanelInputSource::Touch`. A tap stays down at least 30 ms, as panel MIDI does.
+  - **Encoders A–H, LEVEL, the MD sound wheel and LCD targets:** turn with the curve, one finger per control.
+  - **Master volume:** continuous, 300 pt for the whole range.
+  - The encoder speed settings scale the curve. The MD encoders keep their mouse ratio, 1.25× faster than MM.
+- **FUNCTION labels and the other mouse shortcuts** (`.panelAffordance`, `.mmAffordance`, `.mdAffordance`): on iOS they get inline `pointer-events: none` unless a pointing device is connected, so fingers fall through to the panel as on the machine.
+  - `iosPointerDevices.mm` decides: GCMouse lists a mouse, OR an indirect-pointer hover was seen since the app became active. The hover recognizer is restricted to `UITouchTypeIndirectPointer`, so Apple Pencil doesn't count. Users report that GCMouse can miss the Magic Keyboard trackpad.
+  - Changes apply live and are logged to `engine.log`. `GEARMULATOR_IOS_POINTER=0/1` forces the answer.
+  - The plist gains `UIApplicationSupportsIndirectInputEvents`.
+- **Desktop:** nothing is routed; mouse behaviour is unchanged.
+  - Found while checking: `mdPluginProcessor.cpp` had used `JUCE_IOS` in a C++ expression since 0c89c406, so no desktop plugin build compiled. Fixed in 162cf2de7.
+  - New `build/mac-plugin` (arm64 Release, Standalone only, products in `bin/plugins-mac`): builds; `juceRmlMouseInputTest`, `juceRmlTouchDragTest`, `mdLcdInteractionModelTest` and `mdPanelMidiServiceTest` all pass (4/4).
+  - Its first build wrote a `Contents/` folder into the iOS device bundle (`bin/plugins` is the shared default). I removed it; the iOS bundle verifies (`codesign -v` exit 0, signed 08:03). Desktop plugin builds must set `GEARMULATOR_JUCE_PRODUCTS_ROOT` to their own folder.
+
+**Measured in the Simulator** (`GEARMULATOR_IOS_TOUCH_LOG=1`, two-finger paths from the simulator tool):
+
+| Test | Result |
+|---|---|
+| FUNCTION + RECORD (COPY), two fingers | press 23/02, press 24/80 while held, each released by its own finger |
+| TRIG 1 held + encoder A dragged 62 pt at 20 pt/s, iPhone (0.333 pt/px) | TRIG row 20/01 held; 14 single detents at gain 0.250 (the curve predicts 14) |
+| Same drag on encoder A, iPad (0.500 pt/px) | 14 detents |
+| Press with a rolling finger (±3 pt) | 0 detents, dead zone not left |
+| Flick, 100 pt in about 100 ms | 13 detents in 2 events: the Simulator merged the moves; the per-event cap of 8 held |
+| Tap on the COPY label, no pointer | hit `div.elektronCaptionedKey` (the key's container), nothing claimed |
+| Same tap, pointer forced on | hit `div#altCopy.mmAffordance` |
+
+The Simulator lists the Mac's mouse as a GCMouse (`pointer: connected (GCMouse connected …)`), so there the labels are on unless forced off.
+
+**Not yet on a device.** The StikDebug session is using `build/ios-mm` and the iPhone. Still to check:
+- The feel on both devices.
+- That the iPhone reports no pointer.
+- That the iPad reports the Magic Keyboard trackpad.
+
+**Known limit:** JUCE 7 sends Apple Pencil and trackpad hover as moves of finger 0. A hover while finger 0 turns a knob could move it; jumps over 80 pt are ignored.
+
 ### 2026-11-27 (late evening): StikDebug's Enable JIT → Gearmulator MM on the iPhone runs no script
 
 **Symptom (yours):** on the iPhone, JIT Probe passes with StikDebug, but Enable JIT → Gearmulator MM leaves MM on the interpreter, even after force-quitting both. The iPad works.
