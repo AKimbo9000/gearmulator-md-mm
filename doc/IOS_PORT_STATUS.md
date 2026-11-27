@@ -20,6 +20,7 @@ produced it.
 | 4 Simulator build + self-test | not started |
 | 5 Device build + self-test | not started |
 | 6 AUv3 + Files ROM import | not started |
+| C Standalone Monomachine app (iPad, iPhone) | **60 s JIT target met on both devices** (2026-11-27, see the Phase C entry of that date) |
 
 ## Environment
 
@@ -681,6 +682,68 @@ Your screenshots, untethered, JIT through StikDebug. Full MM `trigPressFirmwareT
 - **Settings › Skins:** available skins (Activate, Export), Open skins folder; Developer Options (RmlUi debugger, reload via F5, MCP server, disable parameter tooltips).
 - **JUCE standalone menu:** Audio/MIDI Settings… (output device, sample rate, buffer size, MIDI inputs), Save current state…, Load a saved state…, Reset to default state.
 - **New for iOS:** engine badge and reason, Relaunch with JIT, interpreter warning, ROM import from Files with validation, a test tone, Bluetooth MIDI pairing.
+
+### 2026-11-27 (midday): Phase C on the iPhone; 60 s JIT result on both devices
+
+**Target met on both devices:** a 60 s JIT run from the Play press with min rtf ≥ 1.2 and 0 underruns.
+
+| Device | Launched by | Build | Window from Play | min rtf | Underruns since Play | Output peaks | Callbacks/s |
+|---|---|---|---|---|---|---|---|
+| iPhone 17 Pro Max | Mac (LLDB, cable) | new (worker + 25 ms cushion) | t=12–93, 81 s | **1.934** | **0** | 0.64–0.90 | 187–188 |
+| iPad Pro 13 M4 | Mac (LLDB, Wi-Fi) | new | t=12–95, 84 s | **1.874** (mean 2.036) | **0** | 0.61–0.93 | 186–188 |
+| iPad Pro 13 M4 | **StikDebug (your run, 11:55 KST)** | previous (a9b02025) | t=11–1507, 1,497 s | 2.203 (first 60 s: 2.246) | 2, both at the Play press | up to 1.015 | 184–188 |
+
+How the table was produced:
+- **Runs:** `GEARMULATOR_MM_AUTOPLAY_SECONDS=12 tools/jitprobe/lldb_jit_run.sh <udid> <coredevice> <out> 95`. Logs are in `build/device-runs/iphone-final-121723/`, `ipad-final-122123/` and `ipad-before-122046/` (yours, copied over Wi-Fi while it still ran). `build/` is not committed.
+- **Underruns:** `io_underruns_since_play`, the audio callbacks that played silence.
+- **Audio session, both devices:** Playback, built-in speaker, 48 kHz, 257 frames. 48000 / 257 = 186.8 callbacks/s, which matches.
+- **"New build":** commit 4661a069 plus the cushion setting. The later "(selected)" button label in 4a4ff38a changes nothing else. That build is now installed on both devices.
+
+**The one underrun at Play, on both devices: the JIT compiling, now absorbed.**
+- **Every earlier JIT run** had exactly one underrun after Play: jitrun2–5 on the iPad, the first iPhone run, and your StikDebug run, which had 2 in the same window.
+- **The new meter's line for it** (iPhone, before the fix): `late_block at=12.013s block=17.73ms cpu=17.62ms budget=5.35ms jit_code_emitted=78720B since_play=0.000s`. That is the block in which the emulation took the press:
+  - it emitted 78,720 bytes of new JIT code (the sequencer's DSP code running for the first time);
+  - it was on a CPU for the whole 17.7 ms, so it wasn't a lock wait or preemption.
+- **Boot** does the same: 291,520 bytes in a 17.6–28.3 ms block. Later Play presses compile nothing and cost nothing.
+- **Fix:** the emulation now runs on the offload worker for the JIT too, not only the interpreter (`iosEngine.mm` `offloadEmulation`). The worker keeps 25 ms of audio queued beyond the block being played. The press blocks measured since: 17.91, 21.16 and 20.13 ms, all absorbed. The emulated samples are unchanged and play 25 ms later.
+- **Cost and choice:**
+  - **Latency:** output now plays 25 ms later. This matters only for live playing; MIDI and touches still reach the emulation at once.
+  - **Setting:** Settings › Audio and MIDI › Audio cushion offers one block, 10, 25 (default) and 50 ms. The choice is saved and applied by restarting the audio device. In the Simulator, 10 ms gave 11.6 ms in effect (the floor of one 512-frame block at 44.1 kHz), it survived a relaunch, and 25 ms gave 25.0 ms.
+  - **Margin:** 25 ms covers a block up to about 4 IO periods (21 ms). The largest press block so far is 21.16 ms. If a click appears at some first-time action, choose 50 ms.
+- **Side effect:** the worker isn't a real-time thread, and it runs the JIT a little slower than the IO thread did:
+  - iPhone 1.93–2.25 (mean 2.18) instead of 2.15–2.29 (mean 2.26);
+  - iPad mean 2.04 instead of 2.24.
+
+  Both stay far above 1.2.
+
+**New in `realtime.log`:**
+- `late_block` lines: wall and thread-CPU time, JIT code emitted, and time since Play;
+- `io_underrun` lines;
+- per second: `max_block_ms`, `cushion_ms` and `jit_code_bytes`;
+- separate `late_blocks_since_play` and `io_underruns_since_play` counts, both taken at the press itself.
+
+**The other iPhone checks (same as the iPad):**
+- **Audio after Play:** peaks 0.64–0.91 on the JIT. On the interpreter, a peak of 0.73 at rtf 0.46–0.50; the iPad runs 0.57–0.61. Both are below real time, as Settings says; the iPhone's interpreter is about 20% slower and isn't changed.
+- **Screen fit, device screenshot in landscape:** the whole panel is inside the safe area, clear of the Dynamic Island, with Settings in the strip beside it. The LCD showed 120.0 BPM while playing.
+- **Settings page on the device:** it opened, fits the width, scrolls, and shows "JIT is running" and the audio section. Someone on the phone scrolled it and tapped Done, as expected.
+- **ROM import** (`GEARMULATOR_IOS_IMPORT_TEST`, the code path behind the Files picker):
+  - a 1000-byte file was rejected (size);
+  - an 8 MiB file of zeros was rejected (fingerprint);
+  - the ROM was accepted and the device restarted with it.
+
+  This matches the iPad.
+- **Differences from the iPad:** none, apart from the interpreter speed above. The Play underrun was common to both and is fixed.
+
+**What you should do**
+1. **StikDebug run on the iPad with the new build** (installed, so it counts for the record):
+   1. Connect LocalDevVPN.
+   2. Open Gearmulator MM from StikDebug.
+   3. Press Play and leave it for 60 s or more.
+   4. Tell me. I can read `realtime.log` over Wi-Fi; no cable is needed. Expected result: `io_underruns_since_play=0`.
+2. **Optional: the same on the iPhone.** StikDebug has not been tried on the iPhone yet.
+3. **Listen at the first Play** on either device: there should be no click. If touches feel late, try Audio cushion 10 ms, and tell me whether the first Play then clicks.
+4. **Turn the iPhone to portrait** and check that the panel and Settings fit. The Simulator passed in portrait; the device has only been seen in landscape.
+5. **Still by hand:** Bluetooth MIDI pairing, importing through the Files picker, and long-press.
 
 ### iOS MM app usability: where the goal stopped (2026-11-27)
 
