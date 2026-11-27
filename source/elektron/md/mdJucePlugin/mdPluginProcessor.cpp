@@ -804,7 +804,11 @@ namespace mdJucePlugin
 			else
 				m_startupDiagnosticsEnabled = false;
 		}
-		if(m_model == md::MachineModel::Machinedrum || m_startupDiagnosticsEnabled || JUCE_IOS)
+		bool tick = m_model == md::MachineModel::Machinedrum || m_startupDiagnosticsEnabled;
+#if JUCE_IOS
+		tick = true;	// iOS keeps the audio inputs closed on every tick
+#endif
+		if(tick)
 			startTimer(250);
 		m_performanceReport = std::make_unique<synthLib::PerformanceReport>(
 			getPlugin().getRealtimeInstrumentation(), panelEventDetails);
