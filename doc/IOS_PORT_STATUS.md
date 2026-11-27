@@ -20,7 +20,7 @@ produced it.
 | 4 Simulator build + self-test | not started |
 | 5 Device build + self-test | not started |
 | 6 AUv3 + Files ROM import | not started |
-| C Standalone Monomachine app (iPad, iPhone) | **60 s JIT target met on both devices**: 0 late blocks, 0 silent callbacks, min rtf 2.47 (iPhone) and 2.30 (iPad); StikDebug-launched iPad run on this build still to do; see the 2026-11-27 (night) entry |
+| C Standalone Monomachine app (iPad, iPhone) | **60 s JIT target met on both devices**: 0 late blocks, 0 silent callbacks, min rtf 2.47 (iPhone) and 2.30 (iPad); iPad with the JIT enabled by StikDebug: 116 s, min rtf 2.29, 0 late blocks; see the 2026-11-27 (night) entry |
 
 ## Environment
 
@@ -710,12 +710,14 @@ Your screenshots, untethered, JIT through StikDebug. Full MM `trigPressFirmwareT
   - **A 44.1 kHz session**, which would skip resampling: the built-in audio of both devices offers 48 kHz only. It is retried at each launch, in case an interface allows it.
   - **Covering the panel with the settings sheet:** the Play block did not change (5.65 ms), so UI rendering is not the cause.
 
+**StikDebug run on the iPad, current build** (`build/device-runs/ipad-stik-150608/`):
+- **How it was started:** MM was started by `devicectl` with autoplay. Then StikDebug was opened with `stikdebug://enable-jit?bundle-id=com.aki.gearmulator.mm&pid=<pid>&script-name=universal.js`, the URL that Settings › Relaunch with JIT opens.
+- **Attach:** StikDebug attached through LocalDevVPN within 20 s. `engine.log` shows `watcher: debugger attached`, `region acquired … 16MiB` and `switch: device recreated on the JIT`. `realtime.log` shows `engine changed: JIT (StikDebug, switched in Settings) use_jit=1 debugged=1`.
+- **From Play, t=20–135 (116 s):** min rtf **2.294** (mean 2.372), **0 late blocks**, 0 silent callbacks, Play block 7.59 / 10.7 ms, peaks 0.53–1.00, 186 callbacks/s.
+- **Not covered:** a launch from StikDebug's own app list, which you did at 11:55 on the previous build: 1,497 s, min rtf 2.203, 2 underruns at the Play press.
+
 **What is left for you**
-1. **StikDebug run on the iPad with the installed build** (for the record the goal asked for):
-   1. Connect LocalDevVPN.
-   2. Open Gearmulator MM from StikDebug.
-   3. Press Play and leave it for 60 s or more.
-   4. Tell me. I read `realtime.log` over Wi-Fi.
+1. **Optional:** launch Gearmulator MM from StikDebug's own app list once with this build, press Play, wait 60 s, and tell me. The StikDebug-enabled run above already covers the JIT through StikDebug.
 2. **Play live a little:** check that touches and MIDI don't feel later than before. If they do, Settings › Audio cushion › One block is the lowest setting.
 3. **On the iPhone in landscape:** check the home bar on the panel's bottom strip, and that the corner Settings button is easy to hit.
 4. **Still by hand:** Bluetooth MIDI pairing, importing through the Files picker, and long-press.
