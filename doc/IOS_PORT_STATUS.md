@@ -20,7 +20,7 @@ produced it.
 | 4 Simulator build + self-test | not started |
 | 5 Device build + self-test | not started |
 | 6 AUv3 + Files ROM import | not started |
-| C Standalone Monomachine app (iPad, iPhone) | 60 s JIT runs: iPhone 0 late blocks (Play block 5.29 ms, 0.06 ms margin), iPad **1 late block** (5.91 ms); min rtf ≥ 1.56, 0 silent callbacks; see the 2026-11-27 (late afternoon) entry |
+| C Standalone Monomachine app (iPad, iPhone) | 60 s JIT runs: min rtf ≥ 1.4, 0 silent callbacks; the first-Play block is at the 5.35 ms edge (5.24–5.87 ms), 0 or 1 late block depending on the run; see the 2026-11-27 (evening) entry |
 
 ## Environment
 
@@ -682,6 +682,40 @@ Your screenshots, untethered, JIT through StikDebug. Full MM `trigPressFirmwareT
 - **Settings › Skins:** available skins (Activate, Export), Open skins folder; Developer Options (RmlUi debugger, reload via F5, MCP server, disable parameter tooltips).
 - **JUCE standalone menu:** Audio/MIDI Settings… (output device, sample rate, buffer size, MIDI inputs), Save current state…, Load a saved state…, Reset to default state.
 - **New for iOS:** engine badge and reason, Relaunch with JIT, interpreter warning, ROM import from Files with validation, a test tone, Bluetooth MIDI pairing.
+
+### 2026-11-27 (evening): JIT compiler 18% faster with identical code; the first-Play block still at the edge
+
+**The compiler work.**
+- **Benchmark:** `mmJitCompileBench`, in mdLibTest. Each round boots a fresh Monomachine for 1 s of emulated time (about 680 blocks, 290 KB of real firmware code), and the benchmark reports compile time per block. Discarding the blocks of a running DSP instead broke its live loops (HDI08 overflows, then an invalid PC).
+- **Profile:** `xctrace --all-processes`, samples under `JitBlockChain::emit`.
+- **Fixes**, in dsp56300 74cb0dfc. Each one gives the same results by construction:
+  - **Opcode decoding:** `getInstructionTypes` and the two `find…OpcodeInfo` functions searched the opcode lists linearly (about 10% of compile time). They now use process-wide memos, one atomic word per entry.
+  - **`PushXMMRegs`/`PushGPRegs`:** they scanned the register pool once per register (8.9%). They now use one bitmask of host register ids.
+  - **`convert(Register)`:** a constexpr table instead of the switch (3.5%).
+- **Result:** emit **7.42 → 6.04–6.13 µs** per block, codegen 5.55 → 4.23–4.28 µs.
+- **Identical output:**
+  - the same code bytes, 5,618,640 per 20 boots;
+  - `trigPressFirmwareTest` renders equal to `doc/ios-baselines` (MM `6adf0ea75100b8c3`, MD `bdb35c9d2cdc6bb9`);
+  - `dsp56kTestRunner` passes in the JIT and interpreter builds.
+- **Create overhead:** creating a block costs only 0.1 µs beyond its emit (new `createNs` counter).
+
+**Devices, the same build** (ThinLTO, PGO on mdLib and 68kEmu):
+
+| Run | iPhone Play block | iPad Play block |
+|---|---|---|
+| short run 1 | **5.24 ms, no late block** | 5.79 ms |
+| short run 2 | 5.62 ms | **no late block** |
+| short run 3 | 5.50 ms | 5.68 ms |
+| 60 s run (`*-final3-141356`) | 5.57 ms, 1 late block; min rtf 1.416, 0 silent | 5.87 ms, 1 late block; min rtf 1.948, 0 silent |
+
+- **Compiling on the devices:** 1.6–1.8 ms of the Play block (10 µs per block, against 6 µs on the Mac). The rest, about 3.9 ms, is the emulation's work at the press, about 1.3 ms more than a normal block.
+- **Thermal throttling:** the iPhone's steady rtf fell over the day, from about 2.2 to 1.6 (mean of the last run), after some 40 back-to-back runs, so it is throttled now. Its later numbers are pessimistic.
+- **Where that leaves the target:** the first Play is now at the edge of the 5.35 ms budget on both devices, passing in some runs and missing by up to 0.5 ms in others. The 25 ms cushion keeps every miss silent (0 silent callbacks in every run).
+
+**What remains to reach 0 late blocks reliably.** Each option is a project of its own:
+- **asmjit's builder pass:** finalize plus the builder's emit are about 25% of compile time. The JIT records cursor positions and inserts code before them (`PushBeforeFunctionCall`, peripheral accesses), so emitting directly with the assembler is a redesign.
+- **The remaining small items:** the register pool (about 13%), `JitStackHelper` (5%), `getRegisters` (3%). Each could be tightened the same way, together perhaps 10–15%.
+- **The emulated work at the press:** Phase 3 (timed threaded mode) would run the microcontroller and the DSPs on separate cores.
 
 ### 2026-11-27 (late afternoon): the first-Play block on both devices; home indicator on the panel's chin
 
