@@ -105,6 +105,13 @@ namespace
 {
 	// The part of the screen the panel may use: the display minus its safe-area insets (notch, Dynamic Island,
 	// home indicator). Rotation swaps it, so it is read whenever it is needed.
+	juce::Rectangle<int> iosScreenArea()
+	{
+		if (const auto* display = juce::Desktop::getInstance().getDisplays().getPrimaryDisplay())
+			return display->totalArea;
+		return {};
+	}
+
 	juce::Rectangle<int> iosSafeArea()
 	{
 		if (const auto* display = juce::Desktop::getInstance().getDisplays().getPrimaryDisplay())
@@ -200,13 +207,38 @@ void EditorWindow::resized()
 		constexpr int bw = 96, bh = 40, gap = 8;
 		const auto skinW = static_cast<float>(m_state.getWidth());
 		const auto skinH = static_cast<float>(m_state.getHeight());
-		const auto fit = std::max(0.01f, std::min(static_cast<float>(area.getWidth()) / skinW, static_cast<float>(area.getHeight()) / skinH));
+		const auto fitIn = [&](const juce::Rectangle<int>& _r)
+		{
+			return std::max(0.01f, std::min(static_cast<float>(_r.getWidth()) / skinW, static_cast<float>(_r.getHeight()) / skinH));
+		};
+		auto fit = fitIn(area);
+
+		// Where the height limits the panel (an iPhone in landscape), it reaches down to the screen's bottom edge, so the
+		// home indicator sits on the panel's chin: the strip below the step buttons and their numbers, decorative screws
+		// only. That is allowed (no control under the home indicator) as long as the chin covers the inset: on the
+		// Monomachine it is 5.8% of the panel's height, 25 pt against a 21 pt inset; 5.5% is the margin used here.
+		constexpr float chinShare = 0.055f;
+		// the screen's own bottom edge: the standalone window makes this component 30 pt taller than the screen
+		const auto screen = getLocalArea(nullptr, iosScreenArea()).getIntersection(getLocalBounds());
+		const auto bottomInset = screen.getBottom() - area.getBottom();
+		bool onChin = false;
+		if (bottomInset > 0 && static_cast<float>(area.getWidth()) / skinW > static_cast<float>(area.getHeight()) / skinH)
+		{
+			const auto f = fitIn(area.withBottom(screen.getBottom()));
+			if (skinH * f * chinShare >= static_cast<float>(bottomInset))
+			{
+				fit = f;
+				onChin = true;
+			}
+		}
 		m_skinScale = fit;
 		const auto fitW = static_cast<int>(skinW * fit);
 		const auto fitH = static_cast<int>(skinH * fit);
 		if (!m_state.resizeEditor(fitW, fitH))
 			return;
-		const auto panel = juce::Rectangle<int>(fitW, fitH).withCentre(area.getCentre());
+		auto panel = juce::Rectangle<int>(fitW, fitH).withCentre(area.getCentre());
+		if (onChin)
+			panel.setY(screen.getBottom() - fitH);
 		if (auto* root = m_state.getUiRoot())
 			root->setTopLeftPosition(panel.getPosition());
 		if (m_gearButton)
