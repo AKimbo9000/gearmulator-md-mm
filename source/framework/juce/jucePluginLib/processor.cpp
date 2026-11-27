@@ -48,25 +48,42 @@ namespace synthLib
 #include <mutex>
 #include <thread>
 #include <pthread.h>
+#include <time.h>
 extern "C" const char* tusEngineDescription();
 std::string tusAudioSessionDescription();
 uint32_t (*g_tusTransportCounter)() = nullptr;
+// set by the instrument: bytes of JIT code emitted so far (0 without a JIT), so the meter can tell compile spikes apart
+uint64_t (*g_tusJitCodeBytes)() = nullptr;
 // the last one-second readings of the meter below, for the iOS settings sheet
 void tusRealtimeLast(double& _rtf, double& _callbacksPerSecond, double& _peak);
 // mixes a quiet 440 Hz tone into the output for _seconds (Settings > Audio > Test tone)
 void tusPlayTestTone(double _seconds);
-// set by the instrument: true when the emulation must not run on the real-time audio thread (the interpreter)
+// set by the instrument: true when the emulation must not run on the real-time audio thread
 bool (*g_tusOffloadProcessing)() = nullptr;
+// audio queued between the emulation worker and the audio callback beyond one block (Settings > Audio): it absorbs
+// blocks that take longer than their duration, such as the JIT compiling code the firmware runs for the first time
+// (18 ms for one 5.35 ms block at the first Play, IOS_PORT_STATUS). Applied when the audio device next starts.
+void tusSetOffloadCushionMs(double _ms);
+double tusOffloadCushionMs();
+// the cushion in effect, in ms of audio, 0 while the emulation runs on the audio thread
+double tusOffloadActiveCushionMs();
 namespace
 {
 	struct OffloadStats { bool active; uint64_t ioCallbacks; uint64_t ioUnderruns; };
 	OffloadStats offloadStats();
+	std::atomic<double> g_offloadCushionMs{25.0};
+	std::atomic<double> g_offloadActiveCushionMs{0.0};
 }
+void tusSetOffloadCushionMs(const double _ms) { g_offloadCushionMs = std::clamp(_ms, 0.0, 200.0); }
+double tusOffloadCushionMs() { return g_offloadCushionMs.load(); }
+double tusOffloadActiveCushionMs() { return g_offloadActiveCushionMs.load(); }
 namespace
 {
-	// iOS real-time meter (PLAN.md Phase C): processing time of every audio block against its duration. A block whose
-	// processing takes longer than its duration is counted as an underrun. A background thread logs one line per
-	// second to Documents/realtime.log; the audio thread only updates atomics.
+	// iOS real-time meter (PLAN.md Phase C): processing time of every emulated audio block against its duration. A block
+	// whose processing takes longer than its duration is a late block. Where the emulation runs on the audio thread a
+	// late block is an underrun; where it runs on the offload worker the queued audio absorbs it, and an underrun is an
+	// audio callback that found too little audio queued and played silence (io_underruns). A background thread logs one
+	// line per second to Documents/realtime.log; the audio threads only update atomics.
 	struct IosRealtimeMeter
 	{
 		std::atomic<uint64_t> audioNs{0}, processNs{0}, blocks{0}, underruns{0}, samples{0};
@@ -76,10 +93,29 @@ namespace
 		std::atomic<double> lastRtf{0}, lastCallbacks{0}, lastPeak{0};
 		std::atomic<double> toneSeconds{0};
 		double tonePhase = 0;		// audio thread only
+		std::atomic<uint64_t> maxBlockNs{0};		// longest block since the last log line
+		// every block that took longer than its duration, for the log: when, how long, how much of it the thread was on
+		// a CPU (a much smaller CPU time means it waited for a lock or was preempted), and how long after the last Play
+		struct UnderrunEvent { int64_t atNs; uint64_t wallNs, cpuNs, budgetNs; int64_t sincePlayNs; uint32_t play; uint64_t codeBytes; };
+		static constexpr uint32_t MaxEvents = 256;
+		UnderrunEvent events[MaxEvents]{};
+		std::atomic<uint32_t> eventCount{0};
+		// audio callbacks that played silence for lack of queued audio (offload worker only)
+		struct IoUnderrunEvent { int64_t atNs; int missing, wanted; int64_t sincePlayNs; uint32_t play; };
+		IoUnderrunEvent ioEvents[MaxEvents]{};
+		std::atomic<uint32_t> ioEventCount{0};
+		std::chrono::steady_clock::time_point startTime = std::chrono::steady_clock::now();
+		uint32_t lastPlaySeen = 0;			// emulation thread only
+		std::atomic<int64_t> lastPlayAtNs{-1};	// when the emulation took the last Play press, ns after startTime
+		std::atomic<uint64_t> lateAtPlay{0}, ioUnderrunsAtPlay{0};	// counters when it took it; the press block counts after
+		int64_t nowNs() const { return int64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - startTime).count()); }
+		int64_t sincePlay(const int64_t _atNs) const { const auto p = lastPlayAtNs.load(); return p < 0 ? -1 : _atNs - p; }
 		void start()
 		{
 			if(started.exchange(true))
 				return;
+			startTime = std::chrono::steady_clock::now();
+			lastPlaySeen = g_tusTransportCounter ? g_tusTransportCounter() : 0;
 			std::thread([this]
 			{
 				const auto path = juce::File::getSpecialLocation(juce::File::userDocumentsDirectory).getChildFile("realtime.log").getFullPathName().toStdString();
@@ -93,6 +129,7 @@ namespace
 				double minRtf = 1e9;
 				uint64_t underrunsSincePlay = 0;
 				uint64_t lastIo = 0;
+				uint32_t eventsPrinted = 0, ioEventsPrinted = 0;
 				for(;;)
 				{
 					std::this_thread::sleep_for(std::chrono::seconds(1));
@@ -109,23 +146,40 @@ namespace
 					{
 						lastPlay = play;
 						minRtf = 1e9;
-						underrunsSincePlay = 0;
 						std::fprintf(f, "play pressed: meter restarted\n");
 					}
 					const auto a = audioNs.load(), pr = processNs.load(), b = blocks.load(), sm = samples.load(), u = underruns.load();
 					const double rtf = pr > lastProcess ? double(a - lastAudio) / double(pr - lastProcess) : 0.0;
 					if(a > lastAudio && rtf < minRtf)
 						minRtf = rtf;
-					underrunsSincePlay += u - lastUnderruns;
+					underrunsSincePlay = lastPlayAtNs.load() < 0 ? u : u - std::min(u, lateAtPlay.load());
 					const uint32_t pb = peakBits.exchange(0);
 					float peak;
 					std::memcpy(&peak, &pb, sizeof(peak));
 					const auto off = offloadStats();
-					std::fprintf(f, "t=%llu window_rtf=%.3f min_rtf=%.3f callbacks_per_s=%llu avg_block=%.0f samplerate=%.0f peak=%.5f underruns=%llu underruns_since_play=%llu offload=%d io_callbacks_per_s=%llu io_underruns=%llu\n",
-						(unsigned long long)t, rtf, minRtf < 1e8 ? minRtf : 0.0, (unsigned long long)(b - lastBlocks),
+					for(const uint32_t n = std::min(eventCount.load(std::memory_order_acquire), MaxEvents); eventsPrinted < n; ++eventsPrinted)
+					{
+						const auto& e = events[eventsPrinted];
+						std::fprintf(f, "late_block at=%.3fs block=%.2fms cpu=%.2fms budget=%.2fms jit_code_emitted=%lluB since_play=%s%.3fs play=%u\n",
+							double(e.atNs) * 1e-9, double(e.wallNs) * 1e-6, double(e.cpuNs) * 1e-6, double(e.budgetNs) * 1e-6,
+							(unsigned long long)e.codeBytes,
+							e.sincePlayNs < 0 ? "none " : "", e.sincePlayNs < 0 ? 0.0 : double(e.sincePlayNs) * 1e-9, e.play);
+					}
+					for(const uint32_t n = std::min(ioEventCount.load(std::memory_order_acquire), MaxEvents); ioEventsPrinted < n; ++ioEventsPrinted)
+					{
+						const auto& e = ioEvents[ioEventsPrinted];
+						std::fprintf(f, "io_underrun at=%.3fs silent_frames=%d of %d since_play=%s%.3fs play=%u\n",
+							double(e.atNs) * 1e-9, e.missing, e.wanted,
+							e.sincePlayNs < 0 ? "none " : "", e.sincePlayNs < 0 ? 0.0 : double(e.sincePlayNs) * 1e-9, e.play);
+					}
+					const double maxBlockMs = double(maxBlockNs.exchange(0)) * 1e-6;
+					std::fprintf(f, "t=%llu window_rtf=%.3f min_rtf=%.3f max_block_ms=%.2f callbacks_per_s=%llu avg_block=%.0f samplerate=%.0f peak=%.5f late_blocks=%llu late_blocks_since_play=%llu offload=%d cushion_ms=%.1f io_callbacks_per_s=%llu io_underruns=%llu io_underruns_since_play=%llu jit_code_bytes=%llu\n",
+						(unsigned long long)t, rtf, minRtf < 1e8 ? minRtf : 0.0, maxBlockMs, (unsigned long long)(b - lastBlocks),
 						b > lastBlocks ? double(sm - lastSamples) / double(b - lastBlocks) : 0.0, sampleRate.load(), peak,
-						(unsigned long long)u, (unsigned long long)underrunsSincePlay, off.active ? 1 : 0,
-						(unsigned long long)(off.ioCallbacks - lastIo), (unsigned long long)off.ioUnderruns);
+						(unsigned long long)u, (unsigned long long)underrunsSincePlay, off.active ? 1 : 0, g_offloadActiveCushionMs.load(),
+						(unsigned long long)(off.ioCallbacks - lastIo), (unsigned long long)off.ioUnderruns,
+						(unsigned long long)(off.ioUnderruns - std::min(ioUnderrunsAtPlay.load(), off.ioUnderruns)),
+						(unsigned long long)(g_tusJitCodeBytes ? g_tusJitCodeBytes() : 0));
 					lastIo = off.ioCallbacks;
 					std::fflush(f);
 					lastRtf = rtf;
@@ -141,6 +195,7 @@ namespace
 	struct IosMeterScope
 	{
 		IosMeterScope(juce::AudioBuffer<float>& _buffer, const double _rate) : m_buffer(_buffer), m_start(std::chrono::steady_clock::now()),
+			m_cpuStart(clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID)), m_codeStart(g_tusJitCodeBytes ? g_tusJitCodeBytes() : 0),
 			m_audioNs(_rate > 0 ? uint64_t(double(_buffer.getNumSamples()) * 1e9 / _rate) : 0)
 		{
 			g_iosMeter.start();
@@ -148,13 +203,42 @@ namespace
 		}
 		~IosMeterScope()
 		{
-			const auto ns = uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - m_start).count());
-			g_iosMeter.audioNs += m_audioNs;
-			g_iosMeter.processNs += ns;
-			g_iosMeter.samples += uint64_t(m_buffer.getNumSamples());
-			++g_iosMeter.blocks;
+			const auto end = std::chrono::steady_clock::now();
+			const auto ns = uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(end - m_start).count());
+			auto& m = g_iosMeter;
+			m.audioNs += m_audioNs;
+			m.processNs += ns;
+			m.samples += uint64_t(m_buffer.getNumSamples());
+			++m.blocks;
+			if(ns > m.maxBlockNs.load(std::memory_order_relaxed))
+				m.maxBlockNs.store(ns, std::memory_order_relaxed);
+			// a Play press that this block delivered to the emulation is attributed to this block
+			const uint32_t play = g_tusTransportCounter ? g_tusTransportCounter() : 0;
+			const int64_t startNs = int64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(m_start - m.startTime).count());
+			if(play != m.lastPlaySeen)
+			{
+				m.lastPlaySeen = play;
+				m.lateAtPlay = m.underruns.load();
+				m.ioUnderrunsAtPlay = offloadStats().ioUnderruns;
+				m.lastPlayAtNs = startNs;
+			}
 			if(m_audioNs && ns > m_audioNs)
-				++g_iosMeter.underruns;
+			{
+				++m.underruns;
+				const uint32_t i = m.eventCount.load(std::memory_order_relaxed);
+				if(i < IosRealtimeMeter::MaxEvents)
+				{
+					auto& e = m.events[i];
+					e.atNs = startNs;
+					e.codeBytes = (g_tusJitCodeBytes ? g_tusJitCodeBytes() : 0) - m_codeStart;
+					e.wallNs = ns;
+					e.cpuNs = clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID) - m_cpuStart;
+					e.budgetNs = m_audioNs;
+					e.sincePlayNs = m.sincePlay(startNs);
+					e.play = play;
+					m.eventCount.store(i + 1, std::memory_order_release);
+				}
+			}
 			addTestTone();
 			float peak = 0.0f;
 			for(int c = 0; c < m_buffer.getNumChannels(); ++c)
@@ -184,6 +268,8 @@ namespace
 		}
 		juce::AudioBuffer<float>& m_buffer;
 		std::chrono::steady_clock::time_point m_start;
+		uint64_t m_cpuStart;
+		uint64_t m_codeStart;
 		uint64_t m_audioNs;
 	};
 }
@@ -206,7 +292,8 @@ namespace
 	// overruns every callback, and the kernel's real-time fail-safe then demotes the audio thread to timeshare priority
 	// 0, the efficiency cores, about 5x slower (IOS_PORT_STATUS). Here the callback hands its MIDI to the worker and
 	// plays the samples the worker has finished, silence where there are none yet. The emulated samples are the same and
-	// play one block later. Started in prepareToPlay when the instrument asks for it; the JIT stays on the audio thread.
+	// play later by the cushion. Started in prepareToPlay when the instrument asks for it (both engines on MD/MM: the
+	// JIT's compile spikes overrun the callback too).
 	thread_local bool t_inOffloadWorker = false;
 
 	class IosOffload
@@ -214,7 +301,7 @@ namespace
 	public:
 		~IosOffload() { stop(); }
 
-		void start(juce::AudioProcessor& _processor, const int _channels, const int _maxBlock)
+		void start(juce::AudioProcessor& _processor, const int _channels, const int _maxBlock, const double _sampleRate)
 		{
 			stop();
 			if(!g_tusOffloadProcessing || !g_tusOffloadProcessing())
@@ -222,7 +309,11 @@ namespace
 			m_processor = &_processor;
 			m_channels = std::max(1, _channels);
 			m_maxBlock = std::max(32, _maxBlock);
-			const int capacity = m_maxBlock * 2;
+			// the worker keeps the ring filled to within one block of its capacity, so this much audio beyond the block
+			// being played is queued when a block starts: a block may take that much longer than its duration
+			const int cushion = _sampleRate > 0 ? int(std::ceil(g_offloadCushionMs.load() * _sampleRate / 1000.0)) : 0;
+			const int capacity = std::max(m_maxBlock * 2, m_maxBlock + cushion);
+			g_offloadActiveCushionMs = _sampleRate > 0 ? double(capacity - m_maxBlock) * 1000.0 / _sampleRate : 0.0;
 			m_ring.setSize(m_channels, capacity + 1);
 			m_ring.clear();
 			m_fifo.setTotalSize(capacity + 1);
@@ -244,6 +335,7 @@ namespace
 		void stop()
 		{
 			m_active = false;
+			g_offloadActiveCushionMs = 0.0;
 			{
 				std::lock_guard l(m_mutex);
 				m_quit = true;
@@ -298,7 +390,16 @@ namespace
 			}
 			m_fifo.finishedRead(n1 + n2);
 			if(avail < n)
+			{
 				++m_ioUnderruns;
+				auto& m = g_iosMeter;
+				if(const uint32_t i = m.ioEventCount.load(std::memory_order_relaxed); i < IosRealtimeMeter::MaxEvents)
+				{
+					const auto at = m.nowNs();
+					m.ioEvents[i] = {at, n - avail, n, m.sincePlay(at), g_tusTransportCounter ? g_tusTransportCounter() : 0};
+					m.ioEventCount.store(i + 1, std::memory_order_release);
+				}
+			}
 			m_cv.notify_one();
 			return true;
 		}
@@ -1167,8 +1268,9 @@ namespace pluginLib
 		{
 			Processor& p;
 			int block;
-			~OffloadStart() { g_iosOffload.start(p, std::max(p.getTotalNumInputChannels(), p.getTotalNumOutputChannels()), block); }
-		} offloadStart{*this, samplesPerBlock};
+			double rate;
+			~OffloadStart() { g_iosOffload.start(p, std::max(p.getTotalNumInputChannels(), p.getTotalNumOutputChannels()), block, rate); }
+		} offloadStart{*this, samplesPerBlock, sampleRate};
 #endif
 		// Use this method as the place to do any pre-playback
 		// initialisation that you need

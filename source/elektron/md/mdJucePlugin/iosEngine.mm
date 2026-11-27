@@ -31,16 +31,21 @@ namespace
 	}
 
 	uint32_t playPresses() { return md::g_playPresses.load(); }
+	uint64_t jitCodeBytes() { return dsp56k::JitCodeRegion::installed() ? dsp56k::JitCodeRegion::used() : 0; }
 }
 
 // read by the real-time meter in jucePluginLib (plain pointers: constant-initialised, no order issue)
 extern uint32_t (*g_tusTransportCounter)();
+extern uint64_t (*g_tusJitCodeBytes)();
 // jucePluginLib/processor.cpp: run the emulation off the real-time audio thread when this returns true
 extern bool (*g_tusOffloadProcessing)();
 namespace
 {
-	// the interpreter cannot meet the audio callback's deadline, and an overrunning real-time thread gets demoted
-	bool offloadWithInterpreter() { return !dsp56k::g_runtimeUseJIT; }
+	// Both engines run the emulation on the offload worker. The interpreter cannot meet the audio callback's deadline,
+	// and an overrunning real-time thread gets demoted. The JIT compiles DSP code on first execution: the first Play
+	// emits ~80 KB of code in one 5.35 ms block, which then takes 18 ms (IOS_PORT_STATUS), and the worker's cushion
+	// absorbs that where the audio callback would play a gap.
+	bool offloadEmulation() { return true; }
 }
 
 extern "C" const char* tusEngineDescription() { return g_engineDescription.load(); }
@@ -59,7 +64,8 @@ std::string tusAudioSessionDescription()
 __attribute__((constructor)) static void tusChooseEngine()
 {
 	g_tusTransportCounter = &playPresses;
-	g_tusOffloadProcessing = &offloadWithInterpreter;
+	g_tusJitCodeBytes = &jitCodeBytes;
+	g_tusOffloadProcessing = &offloadEmulation;
 
 	const bool debugged = stikIsDebugged();
 	void* rx = nullptr;
