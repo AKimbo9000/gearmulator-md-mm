@@ -4,7 +4,8 @@
 # engine.log after the given number of seconds.
 #
 # Use: tools/jitprobe/lldb_jit_run.sh <hardware udid> <coredevice uuid> <out dir> [seconds] [app path]
-# The two device ids are in CLAUDE.local.md. GEARMULATOR_MM_AUTOPLAY_SECONDS is passed on to the app if set.
+# The two device ids are in CLAUDE.local.md. GEARMULATOR_MM_AUTOPLAY_SECONDS and GEARMULATOR_IOS_* are passed on to the
+# app if set.
 set -u
 udid=$1; coredevice=$2; out=$3; seconds=${4:-60}
 app=${5:-"bin/plugins/Release/Standalone/Gearmulator MM.app"}
@@ -16,8 +17,10 @@ xcrun devicectl device install app --device "$udid" "$app" > "$out/install.txt" 
 pid=$(xcrun devicectl device info processes --device "$udid" 2>/dev/null | grep "Gearmulator MM.app" | awk '{print $1}' | head -1)
 [ -n "$pid" ] && xcrun devicectl device process terminate --device "$udid" --pid "$pid" > /dev/null 2>&1 && sleep 2
 
-env_args=()
-[ -n "${GEARMULATOR_MM_AUTOPLAY_SECONDS:-}" ] && export DEVICECTL_CHILD_GEARMULATOR_MM_AUTOPLAY_SECONDS=$GEARMULATOR_MM_AUTOPLAY_SECONDS
+# the app's test hooks: GEARMULATOR_MM_AUTOPLAY_SECONDS and every GEARMULATOR_IOS_* variable set here
+for v in GEARMULATOR_MM_AUTOPLAY_SECONDS $(compgen -e | grep '^GEARMULATOR_IOS_'); do
+	[ -n "${!v:-}" ] && export "DEVICECTL_CHILD_$v=${!v}"
+done
 xcrun devicectl device process launch --start-stopped --device "$udid" --json-output "$out/launch.json" $bundle > /dev/null 2>&1
 pid=$(python3 -c "import json;print(json.load(open('$out/launch.json'))['result']['process']['processIdentifier'])" 2>/dev/null)
 [ -z "$pid" ] && { echo "RESULT FAIL launch (device locked?)"; exit 1; }

@@ -28,6 +28,9 @@
 // jucePluginLib/processor.cpp (iOS real-time meter)
 void tusRealtimeLast(double& _rtf, double& _callbacksPerSecond, double& _peak);
 void tusPlayTestTone(double _seconds);
+void tusSetOffloadCushionMs(double _ms);
+double tusOffloadCushionMs();
+double tusOffloadActiveCushionMs();
 
 namespace mdJucePlugin
 {
@@ -55,6 +58,11 @@ namespace mdJucePlugin
 		}
 
 		juce::String romName() { return isMonomachine() ? "Monomachine OS 1.32b" : "Machinedrum OS 1.63"; }
+
+		constexpr const char* g_cushionKey = "iosOffloadCushionMs";
+		constexpr double g_cushionDefaultMs = 25.0;
+		// 0 leaves one block queued, the least the worker needs
+		constexpr std::pair<double, const char*> g_cushions[] = {{0.0, "One block"}, {10.0, "10 ms"}, {25.0, "25 ms"}, {50.0, "50 ms"}};
 
 		// Runs _change while no DSP runs: the audio callback keeps going and outputs silence meanwhile. The player
 		// takes the callback's lock, so a block in progress finishes first.
@@ -324,6 +332,23 @@ namespace mdJucePlugin
 				}
 				text("Output, sample rate and buffer size, then the MIDI inputs and the MIDI output. Bluetooth MIDI "
 					"devices appear there once paired.");
+				m_cushionStatus = &text({});
+				for(const auto& [ms, label] : g_cushions)
+				{
+					const double value = ms;
+					const auto text = juce::String("Audio cushion: ") + label + (ms == g_cushionDefaultMs ? " (default)" : "");
+					auto& b = button(text, [value]
+					{
+						tusSetOffloadCushionMs(value);
+						if(auto* p = processor())
+						{
+							p->getConfig().setValue(g_cushionKey, value);
+							p->getConfig().saveIfNeeded();
+						}
+						withAudioStopped([] {});		// the worker takes the new size when the audio device restarts
+					});
+					m_cushionButtons.push_back({value, text, &b});
+				}
 				button("Play a test tone (440 Hz, 2 s)", [] { tusPlayTestTone(2.0); });
 				button("Pair a Bluetooth MIDI device", []
 				{
@@ -456,6 +481,17 @@ namespace mdJucePlugin
 					: juce::String(), g_warn);
 				m_jitStatus->setText(g_jitStatusText, g_jitStatusColour);
 				showSessionBufferSize();
+				const double cushion = tusOffloadActiveCushionMs();
+				m_cushionStatus->setText(juce::String::formatted("Audio cushion in effect: %.1f ms. The emulation runs ahead of the "
+					"audio output by this much, so a block may take this much longer than its duration without a gap, such as "
+					"when the JIT compiles code the firmware runs for the first time (about 18 ms at the first Play). "
+					"The sound plays this much later; MIDI and touches reach the emulation at once.", cushion), g_secondary);
+				for(const auto& [value, text, b] : m_cushionButtons)
+				{
+					const bool selected = value == tusOffloadCushionMs();
+					b->setToggleState(selected, juce::dontSendNotification);
+					b->setButtonText(selected ? text + " (selected)" : text);		// the button font has no check mark glyph
+				}
 				if(auto* p = processor())
 				{
 					m_diagButton->setButtonText(p->performanceDiagnosticsActive() ? "Stop performance capture" : "Start performance capture");
@@ -563,6 +599,8 @@ namespace mdJucePlugin
 			juce::AudioDeviceSelectorComponent* m_selector = nullptr;
 			juce::TextButton* m_diagButton = nullptr;
 			TextBlock* m_diagStatus = nullptr;
+			std::vector<std::tuple<double, juce::String, juce::TextButton*>> m_cushionButtons;
+			TextBlock* m_cushionStatus = nullptr;
 			juce::TextButton* m_ramComplete = nullptr;
 			juce::TextButton* m_ramOriginal = nullptr;
 		};
@@ -620,6 +658,11 @@ namespace mdJucePlugin
 				}
 			}).detach();
 		}
+	}
+
+	void loadIosOffloadCushion(const juce::PropertySet& _config)
+	{
+		tusSetOffloadCushionMs(_config.getDoubleValue(g_cushionKey, g_cushionDefaultMs));
 	}
 
 	void installIosSettingsSheet()

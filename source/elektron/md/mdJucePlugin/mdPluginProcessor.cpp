@@ -751,6 +751,7 @@ namespace mdJucePlugin
 	{
 #if JUCE_IOS
 		installIosSettingsSheet();
+		loadIosOffloadCushion(getConfig());
 #endif
 		// A profile build keeps its own data folder, but finds firmware in the normal build's roms folder too.
 		if(*GEARMULATOR_STANDALONE_PROFILE)
