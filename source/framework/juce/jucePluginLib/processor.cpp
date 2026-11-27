@@ -81,7 +81,16 @@ namespace
 {
 	struct OffloadStats { bool active; uint64_t ioCallbacks; uint64_t ioUnderruns; uint64_t restartsCarried; };
 	OffloadStats offloadStats();
-	std::atomic<double> g_offloadCushionMs{25.0};
+	std::atomic<double> g_offloadCushionMs{10.0};
+	// The worker renders this many audio-callback buffers per emulation block, so a block may take twice the callback
+	// period: the first-Play block (the JIT compiling the sequencer's code, about 5.7 ms on the iPad) fits its 10.7 ms
+	// instead of overrunning 5.35 ms. The queue then always holds a block's worth beyond the one being rendered.
+	// GEARMULATOR_IOS_WORK_FACTOR=<n> (tests)
+	int offloadWorkFactor()
+	{
+		static const int factor = [] { const char* e = std::getenv("GEARMULATOR_IOS_WORK_FACTOR"); return e ? std::clamp(std::atoi(e), 1, 8) : 2; }();
+		return factor;
+	}
 	std::atomic<double> g_offloadActiveCushionMs{0.0};
 	std::atomic<bool> g_offloadRealtimeActive{false};
 }
@@ -355,9 +364,10 @@ namespace
 			m_maxBlock = std::max(32, _maxBlock);
 			// the worker keeps the ring filled to within one block of its capacity, so this much audio beyond the block
 			// being played is queued when a block starts: a block may take that much longer than its duration
+			m_workMax = m_maxBlock * offloadWorkFactor();
 			const int cushion = _sampleRate > 0 ? int(std::ceil(g_offloadCushionMs.load() * _sampleRate / 1000.0)) : 0;
-			const int capacity = std::max(m_maxBlock * 2, m_maxBlock + cushion);
-			g_offloadActiveCushionMs = _sampleRate > 0 ? double(capacity - m_maxBlock) * 1000.0 / _sampleRate : 0.0;
+			const int capacity = m_workMax + std::max(m_workMax, cushion);
+			g_offloadActiveCushionMs = _sampleRate > 0 ? double(capacity - m_workMax) * 1000.0 / _sampleRate : 0.0;
 			m_ring.setSize(m_channels, capacity + 1);
 			m_ring.clear();
 			m_fifo.setTotalSize(capacity + 1);
@@ -377,7 +387,8 @@ namespace
 				m_fifo.finishedWrite(n1 + n2);
 				++m_restartsCarried;
 			}
-			m_work.setSize(m_channels, m_maxBlock);
+			m_work.setSize(m_channels, m_workMax);
+			m_midiInFrames = 0;
 			m_periodNs = _sampleRate > 0 ? 1e9 * double(m_maxBlock) / _sampleRate : 0.0;
 			m_realtime = m_periodNs > 0 && g_tusOffloadRealtime && g_tusOffloadRealtime();
 			for(auto* b : {&m_midiIn, &m_midiWork, &m_midiOut, &m_ioCarry})
@@ -421,9 +432,11 @@ namespace
 			// MIDI to the worker and the worker's MIDI output to the host; never wait for the worker here
 			if(m_mutex.try_lock())
 			{
-				m_midiIn.addEvents(m_ioCarry, 0, -1, 0);
+				// events keep their place within the worker's block, which spans several callbacks
+				m_midiIn.addEvents(m_ioCarry, 0, -1, m_midiInFrames);
 				m_ioCarry.clear();
-				m_midiIn.addEvents(_midi, 0, -1, 0);
+				m_midiIn.addEvents(_midi, 0, -1, m_midiInFrames);
+				m_midiInFrames = std::min(m_midiInFrames + n, m_workMax - 1);
 				_midi.swapWith(m_midiOut);
 				m_midiOut.clear();
 				m_mutex.unlock();
@@ -484,14 +497,15 @@ namespace
 					std::unique_lock l(m_mutex);
 					m_cv.wait_for(l, std::chrono::milliseconds(5), [this]
 					{
-						return m_quit || (m_ioBlock > 0 && m_fifo.getFreeSpace() >= m_ioBlock);
+						return m_quit || (m_ioBlock > 0 && m_fifo.getFreeSpace() >= std::min(m_ioBlock * offloadWorkFactor(), m_workMax));
 					});
 					if(m_quit)
 						return;
-					block = m_ioBlock;
+					block = std::min(m_ioBlock * offloadWorkFactor(), m_workMax);
 					if(block <= 0 || m_fifo.getFreeSpace() < block)
 						continue;
 					m_midiWork.swapWith(m_midiIn);
+					m_midiInFrames = 0;
 				}
 
 				m_work.setSize(m_channels, block, false, false, true);
@@ -535,6 +549,8 @@ namespace
 		juce::AudioProcessor* m_processor = nullptr;		// processBlock is public here, the override runs
 		int m_channels = 0;
 		int m_maxBlock = 0;
+		int m_workMax = 0;					// largest emulation block: m_maxBlock * offloadWorkFactor()
+		int m_midiInFrames = 0;				// audio frames since the worker took m_midiIn, under m_mutex
 		double m_periodNs = 0;
 		bool m_realtime = false;
 		double m_ringRate = 0;					// sample rate of the audio in the ring
@@ -1357,6 +1373,9 @@ namespace pluginLib
 			double rate;
 			~OffloadStart() { g_iosOffload.start(p, std::max(p.getTotalNumInputChannels(), p.getTotalNumOutputChannels()), block, rate); }
 		} offloadStart{*this, samplesPerBlock, sampleRate};
+		// the worker hands the plugin blocks of several callback buffers
+		if(g_tusOffloadProcessing && g_tusOffloadProcessing())
+			samplesPerBlock *= offloadWorkFactor();
 #endif
 		// Use this method as the place to do any pre-playback
 		// initialisation that you need

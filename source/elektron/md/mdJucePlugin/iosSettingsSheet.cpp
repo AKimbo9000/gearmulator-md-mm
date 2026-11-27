@@ -60,7 +60,7 @@ namespace mdJucePlugin
 		juce::String romName() { return isMonomachine() ? "Monomachine OS 1.32b" : "Machinedrum OS 1.63"; }
 
 		constexpr const char* g_cushionKey = "iosOffloadCushionMs";
-		constexpr double g_cushionDefaultMs = 25.0;
+		constexpr double g_cushionDefaultMs = 10.0;
 		// 0 leaves one block queued, the least the worker needs
 		constexpr std::pair<double, const char*> g_cushions[] = {{0.0, "One block"}, {10.0, "10 ms"}, {25.0, "25 ms"}, {50.0, "50 ms"}};
 
@@ -482,10 +482,10 @@ namespace mdJucePlugin
 				m_jitStatus->setText(g_jitStatusText, g_jitStatusColour);
 				showSessionBufferSize();
 				const double cushion = tusOffloadActiveCushionMs();
-				m_cushionStatus->setText(juce::String::formatted("Audio cushion in effect: %.1f ms. The emulation runs ahead of the "
-					"audio output by this much, so a block may take this much longer than its duration without a gap, such as "
-					"when the JIT compiles code the firmware runs for the first time (about 18 ms at the first Play). "
-					"The sound plays this much later; MIDI and touches reach the emulation at once.", cushion), g_secondary);
+				m_cushionStatus->setText(juce::String::formatted("Audio cushion in effect: %.1f ms. The emulation renders two audio "
+					"buffers per block and runs ahead of the output by at least one block plus this much, so a block may take "
+					"longer than its duration without a gap, such as when the JIT compiles code the firmware runs for the first "
+					"time (about 2 ms at the first Play). The sound plays this much later.", cushion), g_secondary);
 				for(const auto& [value, text, b] : m_cushionButtons)
 				{
 					const bool selected = value == tusOffloadCushionMs();
@@ -665,9 +665,52 @@ namespace mdJucePlugin
 		tusSetOffloadCushionMs(_config.getDoubleValue(g_cushionKey, g_cushionDefaultMs));
 	}
 
+	namespace
+	{
+		// The emulator renders at 44.1 kHz (md::g_samplerate). A 48 kHz session resamples every block in the plugin
+		// (MameResamplerHq, about 4% of the emulation thread on the iPhone); at 44.1 kHz the plugin passes the samples
+		// through unchanged. Applied once, so a sample rate chosen later in Settings stays.
+		constexpr const char* g_nativeRateKey = "iosNativeRateApplied";
+
+		void preferNativeSampleRate(const int _triesLeft)
+		{
+			juce::Timer::callAfterDelay(1000, [_triesLeft]
+			{
+				auto* holder = juce::StandalonePluginHolder::getInstance();
+				auto* p = processor();
+				auto* device = holder ? holder->deviceManager.getCurrentAudioDevice() : nullptr;
+				if(!holder || !p || !device)
+				{
+					if(_triesLeft > 0)
+						preferNativeSampleRate(_triesLeft - 1);
+					return;
+				}
+				if(p->getConfig().getBoolValue(g_nativeRateKey, false))
+					return;
+				const double rate = md::g_samplerate;
+				const auto rates = device->getAvailableSampleRates();
+				auto setup = holder->deviceManager.getAudioDeviceSetup();
+				// the built-in speakers of the iPad Pro M4 and iPhone 17 Pro Max offer 48 kHz only: try again next launch
+				if(!rates.contains(rate) || setup.sampleRate == rate)
+				{
+					tusEngine::log("audio: native rate not applied, session " + std::to_string(setup.sampleRate) + " Hz");
+					return;
+				}
+				p->getConfig().setValue(g_nativeRateKey, true);
+				p->getConfig().saveIfNeeded();
+				const auto before = setup.sampleRate;
+				setup.sampleRate = rate;
+				const auto error = holder->deviceManager.setAudioDeviceSetup(setup, true);
+				tusEngine::log("audio: sample rate " + std::to_string(before) + " -> " + std::to_string(rate) + " Hz, now " +
+					std::to_string(holder->deviceManager.getAudioDeviceSetup().sampleRate) + (error.isEmpty() ? std::string() : " error: " + error.toStdString()));
+			});
+		}
+	}
+
 	void installIosSettingsSheet()
 	{
 		startJitWatcher();
+		preferNativeSampleRate(30);
 
 		// test hook: GEARMULATOR_IOS_IMPORT_TEST=<file>[:<file>...] (relative to Documents) imports each file as the
 		// Files picker would, after the app has started, and writes the verdicts to engine.log

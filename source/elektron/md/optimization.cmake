@@ -5,6 +5,9 @@ option(GEARMULATOR_MDMM_APPLE_THINLTO
 option(GEARMULATOR_MDMM_APPLE_PGO_DSP
 	"Apply the PGO profile to dsp56kEmu/dsp56kBase too when GEARMULATOR_MDMM_APPLE_OPTIMIZE_DSP is ON. iOS turns it off: \
 the JIT compiler is cold in any training run, PGO optimises it for size, and its first-Play compile got 15% slower" ON)
+option(GEARMULATOR_MDMM_APPLE_PGO_JIT_COMPILER
+	"Apply the PGO profile to the JIT compiler's sources too (dsp56kEmu jit*.cpp that only run when compiling, opcodes). \
+iOS turns it off: the compiler is cold in any training run and PGO optimises it for size" ON)
 option(GEARMULATOR_MDMM_APPLE_OPTIMIZE_DSP
 	"Include DSP libraries in the selected MD/MM Apple optimizations" OFF)
 set(GEARMULATOR_MDMM_APPLE_PGO_MODE "none" CACHE STRING
@@ -180,6 +183,25 @@ endif()
 
 if(GEARMULATOR_MDMM_APPLE_OPTIMIZE_DSP)
 	list(APPEND _mdmm_optimization_targets dsp56kEmu dsp56kBase)
+endif()
+
+# The JIT compiler's own sources run only when a block is compiled, so a training run barely touches them and PGO
+# optimises them for size; on iOS that made the first-Play compile 15% slower. They opt out of the profile while the
+# DSP's peripherals and the JIT's runtime code (jit.cpp, jithelper.cpp, jitdspmode.cpp, jittrampoline.cpp) keep it.
+if(GEARMULATOR_MDMM_APPLE_PGO_MODE STREQUAL "use" AND NOT GEARMULATOR_MDMM_APPLE_PGO_JIT_COMPILER AND TARGET dsp56kEmu)
+	get_target_property(_mdmm_dsp_sources dsp56kEmu SOURCES)
+	get_target_property(_mdmm_dsp_dir dsp56kEmu SOURCE_DIR)
+	foreach(_mdmm_source IN LISTS _mdmm_dsp_sources)
+		get_filename_component(_mdmm_name "${_mdmm_source}" NAME)
+		if(_mdmm_name MATCHES "^(jit(block|blockchain|blockinfo|blockruntimedata|asmjithelpers|dspregpool|dspregpoolregpair|dspregs|dspvalue|emitter|mem|ops.*|optimizer|regtracker|stackhelper|coderegion|profilingsupport)|opcodes|opcodecycles)\\.cpp$")
+			if(NOT IS_ABSOLUTE "${_mdmm_source}")
+				set(_mdmm_source "${_mdmm_dsp_dir}/${_mdmm_source}")
+			endif()
+			# not per configuration: the Xcode generator cannot do that per source, and outside PGO use it is a no-op
+			set_property(SOURCE "${_mdmm_source}" TARGET_DIRECTORY dsp56kEmu APPEND PROPERTY COMPILE_OPTIONS
+				"-fno-profile-instr-use")
+		endif()
+	endforeach()
 endif()
 
 # an instrumented iOS app writes its profile on request (mdJucePlugin/iosEngine.mm), since devicectl stops it
