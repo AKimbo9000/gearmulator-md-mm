@@ -33,12 +33,20 @@
 #include "juceRmlUi/rmlEventListener.h"
 #include "juceRmlUi/rmlHelper.h"
 #include "juceRmlUi/juceRmlComponent.h"
+#include "juceRmlUi/rmlInterfaces.h"
 
+#if JUCE_IOS
+#include "iosPointerDevices.h"
+#endif
+
+#include "RmlUi/Core/Context.h"
 #include "RmlUi/Core/Element.h"
 #include "RmlUi/Core/ElementDocument.h"
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <functional>
 #include <string>
 #include <vector>
@@ -144,6 +152,8 @@ namespace mdJucePlugin
 		, m_model(dynamic_cast<const AudioPluginAudioProcessor&>(_processor).getModel())
 		, m_panelRows(dynamic_cast<AudioPluginAudioProcessor&>(_processor).getPanelRows()
 			.port(md::PanelInputSource::Mouse))
+		, m_touchRows(dynamic_cast<AudioPluginAudioProcessor&>(_processor).getPanelRows()
+			.port(md::PanelInputSource::Touch))
 	{
 		juce::Desktop::getInstance().addFocusChangeListener(this);
 	}
@@ -153,6 +163,11 @@ namespace mdJucePlugin
 		// Detach panel MIDI first: its handler calls back into this editor. Panel
 		// MIDI itself belongs to the processor and keeps working without us.
 		getPanelMidiService().getDriver().setEncoderTurnedHandler({});
+#if JUCE_IOS
+		tusPointer::setChangedCallback({});
+		if(auto* rml = getRmlComponent())
+			rml->setTouchHandler({});
+#endif
 		juce::Desktop::getInstance().removeFocusChangeListener(this);
 		m_panelSteps.clear();
 		cancelPanelInputGestures();
@@ -280,6 +295,29 @@ namespace mdJucePlugin
 		createPanelAffordances();
 		applyPixelPerfectPanel();
 		createPanelMidi();
+
+#if JUCE_IOS
+		// Fingers work the panel as on the machine (onPanelTouch). The printed FUNCTION labels are clickable only
+		// while a mouse or trackpad is connected, which cannot hold FUNCTION and press a key at the same time.
+		setPanelAffordancesEnabled(tusPointer::pointingDeviceConnected());
+		tusPointer::setChangedCallback([this, weak = std::weak_ptr<void>(m_lifetimeToken)]
+		{
+			auto* rml = weak.expired() ? nullptr : getRmlComponent();
+			if(!rml)
+				return;
+			juceRmlUi::RmlInterfaces::ScopedAccess access(*rml);
+			setPanelAffordancesEnabled(tusPointer::pointingDeviceConnected());
+			rml->enqueueUpdate();
+		});
+		if(auto* rml = getRmlComponent())
+		{
+			rml->setTouchHandler([this](const juceRmlUi::RmlComponent::TouchEvent& _event)
+			{
+				return onPanelTouch(_event.id, static_cast<int>(_event.phase), _event.position.x, _event.position.y,
+					_event.timeSeconds);
+			});
+		}
+#endif
 
 		// A transfer belongs to the emulated machine, not the lifetime of one
 		// editor window. Reattach progress monitoring after a reopen, or reclaim a
@@ -423,9 +461,15 @@ namespace mdJucePlugin
 
 	std::optional<unsigned> Editor::lcdTargetAt(const Rml::Event& _event) const
 	{
+		const auto mouse = juceRmlUi::helper::getMousePos(_event);
+		return lcdTargetAt(mouse.x, mouse.y);
+	}
+
+	std::optional<unsigned> Editor::lcdTargetAt(const float _x, const float _y) const
+	{
 		if(!m_lcdCanvas || !m_lcdInteractionState)
 			return std::nullopt;
-		const auto mouse = juceRmlUi::helper::getMousePos(_event);
+		const Rml::Vector2f mouse(_x, _y);
 		auto offset = m_lcdCanvas->GetAbsoluteOffset(Rml::BoxArea::Content);
 		auto display = m_lcdCanvas->GetBox().GetSize(Rml::BoxArea::Content);
 		const auto pixelAligned = m_pixelPerfectPanel && m_pixelPerfectPanel->isEnabled();
@@ -845,6 +889,7 @@ namespace mdJucePlugin
 
 	void Editor::cancelPanelInputGestures()
 	{
+		releaseAllPanelTouches();
 		cancelLcdGesture();
 		endPanelGesture();
 		releasePanelButtonGestures();
@@ -2375,7 +2420,8 @@ namespace mdJucePlugin
 
 			const bool mouseHolds = m_shiftPanelLatch.contains(binding.control)
 				|| std::any_of(m_activePanelButtons.begin(), m_activePanelButtons.end(),
-					[&](const ActivePanelButton& _active) { return _active.button == binding.button; });
+					[&](const ActivePanelButton& _active) { return _active.button == binding.button; })
+				|| isTouchKeyHeld(static_cast<size_t>(&binding - m_panelButtonBindings.data()));
 			if(binding.button && !mouseHolds)
 				juceRmlUi::ElemButton::setChecked(binding.button, held);
 		}
@@ -2652,4 +2698,339 @@ namespace mdJucePlugin
 				rml->enqueueUpdateOnce();
 	}
 
+
+	namespace
+	{
+		// A quick tap can lift a few milliseconds after it landed. The firmware scans the key matrix and could miss
+		// so short a press, so a key a finger tapped stays down at least this long, as with panel MIDI.
+		constexpr double g_minTouchHoldMs = 30.0;
+
+		// GEARMULATOR_IOS_TOUCH_LOG=1: each finger's key edges and detents on stderr (Simulator: simctl launch --stderr)
+		bool touchLogEnabled()
+		{
+			static const bool enabled = std::getenv("GEARMULATOR_IOS_TOUCH_LOG") != nullptr;
+			return enabled;
+		}
+
+		const char* touchKindName(const int _kind)
+		{
+			static constexpr const char* names[] = {"ignored", "key", "encoder", "volume", "lcd"};
+			return _kind >= 0 && _kind < 5 ? names[_kind] : "?";
+		}
+	}
+
+	bool Editor::onPanelTouch(const int _id, const int _phase, const float _x, const float _y, const double _timeSeconds)
+	{
+		// lets go of what a finger holds; a key tapped very briefly is released a little later
+		const auto endTouch = [this](const std::map<int, PanelTouch>::iterator _it)
+		{
+			auto& touch = _it->second;
+			if(touch.kind == PanelTouch::Kind::Key)
+			{
+				const double held = juce::Time::getMillisecondCounterHiRes() - touch.pressMilliseconds;
+				if(held >= g_minTouchHoldMs)
+				{
+					releaseTouchKey(touch.binding);
+				}
+				else
+				{
+					juce::Timer::callAfterDelay(static_cast<int>(std::ceil(g_minTouchHoldMs - held)),
+						[this, weak = std::weak_ptr<void>(m_lifetimeToken), binding = touch.binding, generation = m_touchGeneration]
+						{
+							auto* rml = weak.expired() ? nullptr : getRmlComponent();
+							if(!rml || generation != m_touchGeneration)
+								return;
+							juceRmlUi::RmlInterfaces::ScopedAccess access(*rml);
+							releaseTouchKey(binding);
+							rml->enqueueUpdate();
+						});
+				}
+			}
+			if(touchLogEnabled())
+				std::fprintf(stderr, "[TOUCH] up id=%d kind=%s steps=%d engaged=%d\n", _it->first,
+					touchKindName(static_cast<int>(touch.kind)), touch.tracker.steps(), touch.tracker.engaged() ? 1 : 0);
+			touch.tracker.end();
+			m_panelTouches.erase(_it);
+		};
+
+		if(_phase != 0)
+		{
+			const auto it = m_panelTouches.find(_id);
+			if(it == m_panelTouches.end())
+				return false;
+			if(_phase == 2)
+			{
+				endTouch(it);
+				return true;
+			}
+
+			auto& touch = it->second;
+			const double x = _x * touch.pointsX;
+			const double y = _y * touch.pointsY;
+			switch(touch.kind)
+			{
+			case PanelTouch::Kind::Encoder:
+				if(const int steps = touch.tracker.move(x, y, _timeSeconds))
+				{
+					emitEncoderSteps(touch.encoder, steps);
+					turnKnobForPanelMidi(touch.encoder, steps);
+					if(touchLogEnabled())
+						std::fprintf(stderr, "[TOUCH] turn id=%d encoder=%d steps=%+d speed=%.0f gain=%.3f\n", _id,
+							static_cast<int>(touch.encoder), steps, touch.tracker.speed(), touch.tracker.gain());
+				}
+				break;
+			case PanelTouch::Kind::Lcd:
+				{
+					const auto bit = 1u << (static_cast<unsigned>(touch.encoder) - static_cast<unsigned>(md::PanelEncoder::DataEntryA));
+					// the page under the finger changed: stop turning, as the mouse drag does
+					if(!m_lcdInteractionState || m_lcdInteractionState->identityToken != touch.lcdIdentity
+						|| (m_lcdInteractionState->activeEncoderMask & bit) == 0)
+					{
+						touch.kind = PanelTouch::Kind::Ignored;
+						break;
+					}
+					if(const int steps = touch.tracker.move(x, y, _timeSeconds))
+						emitEncoderSteps(touch.encoder, steps);
+				}
+				break;
+			case PanelTouch::Kind::Volume:
+				if(const double steps = touch.tracker.moveContinuous(x, y, _timeSeconds); steps != 0.0 && m_masterVolume)
+					m_masterVolume->setValue(std::clamp(m_masterVolume->getValue() + static_cast<float>(steps / 100.0), 0.0f, 1.0f));
+				break;
+			case PanelTouch::Kind::Key:
+			case PanelTouch::Kind::Ignored:
+				break;
+			}
+			return true;
+		}
+
+		// down: a lift of this finger that never arrived
+		if(const auto stale = m_panelTouches.find(_id); stale != m_panelTouches.end())
+			endTouch(stale);
+
+		auto* rml = getRmlComponent();
+		auto* document = getDocument();
+		auto* context = document ? document->GetContext() : nullptr;
+		if(!rml || !context)
+			return false;
+
+		PanelTouch touch;
+		bool found = false;
+		for(Rml::Element* e = context->GetElementAtPoint({_x, _y}); e && !found; e = e->GetParentNode())
+		{
+			for(size_t i = 0; i < m_panelButtonBindings.size() && !found; ++i)
+			{
+				if(m_panelButtonBindings[i].button && e == m_panelButtonBindings[i].button)
+				{
+					touch.kind = PanelTouch::Kind::Key;
+					touch.binding = i;
+					found = true;
+				}
+			}
+			for(size_t i = 0; i < m_encoders.size() && !found; ++i)
+			{
+				if(m_encoders[i] && e == m_encoders[i])
+				{
+					touch.kind = PanelTouch::Kind::Encoder;
+					touch.encoder = static_cast<md::PanelEncoder>(i);
+					found = true;
+				}
+			}
+			if(!found && m_levelEncoder && e == m_levelEncoder)
+			{
+				touch.kind = PanelTouch::Kind::Encoder;
+				touch.encoder = md::PanelEncoder::Level;
+				found = true;
+			}
+			if(!found && m_soundEncoder && e == m_soundEncoder)
+			{
+				touch.kind = PanelTouch::Kind::Encoder;
+				touch.encoder = md::PanelEncoder::SoundSelection;
+				found = true;
+			}
+			if(!found && m_masterVolume && e == m_masterVolume)
+			{
+				touch.kind = PanelTouch::Kind::Volume;
+				found = true;
+			}
+			if(!found && m_lcdCanvas && e == m_lcdCanvas)
+			{
+				// the LCD away from its parameter targets keeps the pointer behaviour
+				const auto target = lcdTargetAt(_x, _y);
+				if(!target || !m_lcdInteractionState)
+					return false;
+				touch.kind = PanelTouch::Kind::Lcd;
+				touch.encoder = static_cast<md::PanelEncoder>(static_cast<unsigned>(md::PanelEncoder::DataEntryA) + *target);
+				touch.lcdIdentity = m_lcdInteractionState->identityToken;
+				found = true;
+			}
+		}
+		if(!found)
+			return false;
+
+		// one finger per rotary control: a second one is claimed but turns nothing
+		if(touch.kind != PanelTouch::Kind::Key)
+		{
+			for(const auto& [id, other] : m_panelTouches)
+			{
+				const bool sameEncoder = (other.kind == PanelTouch::Kind::Encoder || other.kind == PanelTouch::Kind::Lcd)
+					&& (touch.kind == PanelTouch::Kind::Encoder || touch.kind == PanelTouch::Kind::Lcd)
+					&& other.encoder == touch.encoder;
+				if(sameEncoder || (other.kind == PanelTouch::Kind::Volume && touch.kind == PanelTouch::Kind::Volume))
+					touch.kind = PanelTouch::Kind::Ignored;
+			}
+		}
+
+		const auto scale = rml->getPointsPerContextPixel();
+		touch.pointsX = scale.x > 0.0f ? scale.x : 1.0f;
+		touch.pointsY = scale.y > 0.0f ? scale.y : 1.0f;
+
+		switch(touch.kind)
+		{
+		case PanelTouch::Kind::Key:
+			pressTouchKey(touch.binding);
+			touch.pressMilliseconds = juce::Time::getMillisecondCounterHiRes();
+			break;
+		case PanelTouch::Kind::Encoder:
+		case PanelTouch::Kind::Lcd:
+			touch.tracker.setCurve(touchCurveFor(touch.encoder));
+			touch.tracker.begin(_x * touch.pointsX, _y * touch.pointsY, _timeSeconds);
+			break;
+		case PanelTouch::Kind::Volume:
+			{
+				// a pot, not an encoder: continuous, 300 pt for the whole range when slow, twice as fast at speed
+				juceRmlUi::touchDrag::Curve curve;
+				curve.slowPointsPerStep = 3.0;		// one step = 1 % of the range
+				curve.fastPointsPerStep = 1.5;
+				curve.maxStepsPerSecond = 0.0;
+				touch.tracker.setCurve(curve);
+				touch.tracker.begin(_x * touch.pointsX, _y * touch.pointsY, _timeSeconds);
+			}
+			break;
+		case PanelTouch::Kind::Ignored:
+			break;
+		}
+		if(touchLogEnabled())
+			std::fprintf(stderr, "[TOUCH] down id=%d kind=%s at %.1f,%.1f px, %.3f pt/px\n", _id,
+				touchKindName(static_cast<int>(touch.kind)), _x, _y, touch.pointsX);
+		m_panelTouches[_id] = touch;
+		return true;
+	}
+
+	void Editor::pressTouchKey(const size_t _binding)
+	{
+		if(_binding >= m_panelButtonBindings.size())
+			return;
+		if(m_touchKeyHolds.size() < m_panelButtonBindings.size())
+			m_touchKeyHolds.resize(m_panelButtonBindings.size(), 0);
+		// a second finger on a key that is already down changes nothing for the machine
+		if(m_touchKeyHolds[_binding]++ > 0)
+			return;
+		const auto& binding = m_panelButtonBindings[_binding];
+		if(binding.button)
+			juceRmlUi::ElemButton::setChecked(binding.button, true);
+		const auto combined = m_touchRows.press(binding.packet);
+		(void)sendPanelEvent(combined.row, combined.mask);
+		if(touchLogEnabled())
+			std::fprintf(stderr, "[TOUCH] key press control=%d row=%02x mask=%02x\n", static_cast<int>(binding.control),
+				combined.row, combined.mask);
+	}
+
+	void Editor::releaseTouchKey(const size_t _binding)
+	{
+		if(_binding >= m_touchKeyHolds.size() || _binding >= m_panelButtonBindings.size() || m_touchKeyHolds[_binding] == 0)
+			return;
+		if(--m_touchKeyHolds[_binding] > 0)
+			return;
+		const auto& binding = m_panelButtonBindings[_binding];
+		const auto control = static_cast<size_t>(binding.control);
+		const bool midiHolds = control < m_midiHeldControls.size() && m_midiHeldControls.test(control);
+		const bool mouseHolds = m_shiftPanelLatch.contains(binding.control)
+			|| std::any_of(m_activePanelButtons.begin(), m_activePanelButtons.end(),
+				[&](const ActivePanelButton& _active) { return _active.button == binding.button; });
+		if(binding.button && !midiHolds && !mouseHolds)
+			juceRmlUi::ElemButton::setChecked(binding.button, false);
+		const auto combined = m_touchRows.release(binding.packet);
+		(void)sendPanelEvent(combined.row, combined.mask);
+		if(touchLogEnabled())
+			std::fprintf(stderr, "[TOUCH] key release control=%d row=%02x mask=%02x\n", static_cast<int>(binding.control),
+				combined.row, combined.mask);
+	}
+
+	bool Editor::isTouchKeyHeld(const size_t _binding) const
+	{
+		return _binding < m_touchKeyHolds.size() && m_touchKeyHolds[_binding] > 0;
+	}
+
+	void Editor::releaseAllPanelTouches()
+	{
+		++m_touchGeneration;
+		m_panelTouches.clear();
+		for(size_t i = 0; i < m_touchKeyHolds.size(); ++i)
+		{
+			if(m_touchKeyHolds[i] == 0)
+				continue;
+			m_touchKeyHolds[i] = 1;
+			releaseTouchKey(i);
+		}
+		m_touchKeyHolds.assign(m_panelButtonBindings.size(), 0);
+		// whatever the fingers' rows still hold, for example after the bindings were rebuilt
+		for(uint8_t row = 0x20; row <= 0x26; ++row)
+		{
+			if(m_touchRows.mask(row) == 0)
+				continue;
+			const auto combined = m_touchRows.releaseRow(row);
+			(void)sendPanelEvent(combined.row, combined.mask);
+		}
+	}
+
+	juceRmlUi::touchDrag::Curve Editor::touchCurveFor(const md::PanelEncoder _encoder)
+	{
+		auto& config = getProcessor().getConfig();
+		juceRmlUi::touchDrag::Curve curve;
+		if(_encoder == md::PanelEncoder::SoundSelection)
+		{
+			// the Machinedrum's sound wheel steps through a long list: heavier, with a lower rate cap
+			curve.slowPointsPerStep = 8.0;
+			curve.fastPointsPerStep = 3.0;
+			curve.maxStepsPerSecond = 120.0;
+			return curve.scaled(std::max(1, config.getIntValue("panelWheelSpeedPercent", 100)) / 100.0);
+		}
+		// as with the mouse (applyPanelSpeeds): the Machinedrum's encoders turn faster than the Monomachine's
+		const bool monomachine = getModel() == md::MachineModel::Monomachine;
+		const double base = monomachine ? 150.0 : (_encoder == md::PanelEncoder::Level ? 100.0 : 120.0);
+		const double percent = std::max(1, config.getIntValue("panelEncoderSpeedPercent", 100));
+		return curve.scaled(150.0 / base * percent / 100.0);
+	}
+
+	void Editor::setPanelAffordancesEnabled(const bool _enabled)
+	{
+		if(_enabled)
+		{
+			for(auto* element : m_disabledAffordances)
+				element->RemoveProperty(Rml::PropertyId::PointerEvents);
+			m_disabledAffordances.clear();
+			return;
+		}
+		if(m_panelGestureElement)
+			endPanelGesture();
+		auto* document = getDocument();
+		if(!document || !m_disabledAffordances.empty())
+			return;
+		// An inline property outranks every rule of the skins' stylesheets, which make these hit targets
+		// (.panelAffordance, .mmAffordance, .mdAffordance, .mdVerticalLabel.panelAffordance). Touches then pass
+		// through to the panel behind, as on the machine.
+		for(const char* name : {panelAffordances::g_affordanceClass, "mmAffordance", "mdAffordance"})
+		{
+			Rml::ElementList elements;
+			document->GetElementsByClassName(elements, name);
+			for(auto* element : elements)
+			{
+				if(std::find(m_disabledAffordances.begin(), m_disabledAffordances.end(), element) != m_disabledAffordances.end())
+					continue;
+				element->SetProperty(Rml::PropertyId::PointerEvents, Rml::Style::PointerEvents::None);
+				m_disabledAffordances.push_back(element);
+			}
+		}
+	}
 }

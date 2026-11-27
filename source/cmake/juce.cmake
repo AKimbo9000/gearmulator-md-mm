@@ -181,11 +181,13 @@ endmacro()
 # Documents, where firmware images are imported, and landscape only on iPhone and iPad: the panels are about 2:1, and in
 # portrait they fill a third of the screen. iPadOS ignores the orientation list of an app that can run in a window
 # beside others, hence UIRequiresFullScreen; jucePluginEditorLib/pluginEditorWindow.cpp also limits JUCE's orientations
+# UIApplicationSupportsIndirectInputEvents: trackpad and mouse clicks arrive as indirect-pointer touches (the default from
+# iOS 17), which elektron/md/mdJucePlugin/iosPointerDevices.mm relies on to tell a pointer from a finger
 if(IOS)
 	set(TUS_IOS_PLIST_ARGS
 		IPHONE_SCREEN_ORIENTATIONS UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight
 		IPAD_SCREEN_ORIENTATIONS UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight
-		PLIST_TO_MERGE "<plist><dict><key>UIApplicationSceneManifest</key><dict><key>UIApplicationSupportsMultipleScenes</key><false/><key>UISceneConfigurations</key><dict><key>UIWindowSceneSessionRoleApplication</key><array><dict><key>UISceneConfigurationName</key><string>Default</string><key>UISceneDelegateClassName</key><string>TusSceneDelegate</string></dict></array></dict></dict><key>NSBluetoothAlwaysUsageDescription</key><string>Bluetooth MIDI: connect wireless MIDI keyboards and controllers.</string><key>UIFileSharingEnabled</key><true/><key>LSSupportsOpeningDocumentsInPlace</key><true/><key>UIRequiresFullScreen</key><true/></dict></plist>")
+		PLIST_TO_MERGE "<plist><dict><key>UIApplicationSceneManifest</key><dict><key>UIApplicationSupportsMultipleScenes</key><false/><key>UISceneConfigurations</key><dict><key>UIWindowSceneSessionRoleApplication</key><array><dict><key>UISceneConfigurationName</key><string>Default</string><key>UISceneDelegateClassName</key><string>TusSceneDelegate</string></dict></array></dict></dict><key>NSBluetoothAlwaysUsageDescription</key><string>Bluetooth MIDI: connect wireless MIDI keyboards and controllers.</string><key>UIFileSharingEnabled</key><true/><key>LSSupportsOpeningDocumentsInPlace</key><true/><key>UIRequiresFullScreen</key><true/><key>UIApplicationSupportsIndirectInputEvents</key><true/></dict></plist>")
 else()
 	set(TUS_IOS_PLIST_ARGS "")
 endif()

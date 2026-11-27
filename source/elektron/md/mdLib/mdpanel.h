@@ -139,6 +139,7 @@ namespace md
 	{
 		Mouse,
 		Midi,
+		Touch,	// fingers on the iOS panel, each holding its own key (mdEditor's touch handler)
 		Count
 	};
 

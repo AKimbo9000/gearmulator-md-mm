@@ -4,6 +4,7 @@
 #include <bitset>
 #include <deque>
 #include <initializer_list>
+#include <map>
 #include <memory>
 #include <optional>
 #include <vector>
@@ -20,6 +21,8 @@
 #include "mdLib/mdsyseximport.h"
 #include "mdLib/mdsysexdumpexport.h"
 #include "mdLib/mdsysexrecorder.h"
+
+#include "juceRmlUi/rmlTouchDrag.h"
 
 #include "juce_gui_basics/juce_gui_basics.h"
 
@@ -120,6 +123,7 @@ namespace mdJucePlugin
 		void createLcd();
 		void updateLcdInteractionState();
 		std::optional<unsigned> lcdTargetAt(const Rml::Event& _event) const;
+		std::optional<unsigned> lcdTargetAt(float _x, float _y) const;	// context pixels
 		void updateLcdHover(const Rml::Event& _event);
 		void clearLcdHover();
 		void cancelLcdGesture();
@@ -152,6 +156,22 @@ namespace mdJucePlugin
 		void releaseEncoderPress();
 		void cancelPanelInputGestures();
 		void releaseAllPanelInputs();
+
+		// iOS multi-touch: each finger on a panel key, encoder, the master volume or an LCD target holds or turns
+		// it until that finger lifts, as on the hardware. Called by juceRmlUi::RmlComponent's touch handler with
+		// _phase 0 = down, 1 = move, 2 = up and the position in context pixels. Returns true for a down on a panel
+		// control, which claims the finger for the panel.
+		bool onPanelTouch(int _id, int _phase, float _x, float _y, double _timeSeconds);
+		void releaseAllPanelTouches();
+		void pressTouchKey(size_t _binding);
+		void releaseTouchKey(size_t _binding);
+		bool isTouchKeyHeld(size_t _binding) const;
+		// the drag curve of an encoder for a finger, with the user's encoder or wheel speed setting applied
+		juceRmlUi::touchDrag::Curve touchCurveFor(md::PanelEncoder _encoder);
+		// The printed FUNCTION labels and other mouse shortcuts (panelAffordance elements): clickable on the
+		// desktop; on iOS only while a mouse or trackpad is connected, so that fingers meet the panel of the real
+		// machine, where FUNCTION is held and a key pressed.
+		void setPanelAffordancesEnabled(bool _enabled);
 		void globalFocusChanged(juce::Component* _focusedComponent) override;
 		void queuePanelPulse(md::PanelControl _control, int _count = 1);
 		void servicePanelQueue();
@@ -246,6 +266,24 @@ namespace mdJucePlugin
 		};
 		std::vector<ActivePanelButton> m_activePanelButtons;
 		std::vector<PanelButtonBinding> m_panelButtonBindings;
+
+		struct PanelTouch
+		{
+			enum class Kind : uint8_t { Ignored, Key, Encoder, Volume, Lcd };
+			Kind kind = Kind::Ignored;
+			size_t binding = 0;								// Key: index into m_panelButtonBindings
+			md::PanelEncoder encoder = md::PanelEncoder::DataEntryA;	// Encoder, Lcd
+			uint64_t lcdIdentity = 0;						// Lcd: the LCD page the drag started on
+			juceRmlUi::touchDrag::Tracker tracker;
+			float pointsX = 1.0f;							// screen points per context pixel
+			float pointsY = 1.0f;
+			double pressMilliseconds = 0.0;					// Key
+		};
+		std::map<int, PanelTouch> m_panelTouches;			// by JUCE touch index
+		std::vector<uint8_t> m_touchKeyHolds;				// per m_panelButtonBindings entry: fingers holding it
+		uint32_t m_touchGeneration = 0;						// bumped when every touch is let go
+		md::PanelRowMixer::Port m_touchRows;				// the fingers' share of the processor's panel rows
+		std::vector<Rml::Element*> m_disabledAffordances;	// labels setPanelAffordancesEnabled(false) switched off
 		// What updatePanelMidiPresentation last showed as held from panel MIDI.
 		std::bitset<panelMidi::g_controlCount> m_midiHeldControls;
 		uint8_t m_midiEncoderPushMask = 0;	// bit i: encoder i's switch
