@@ -47,6 +47,7 @@ set(SOURCES
 	rmlSystemFonts.cpp rmlSystemFonts.h
 	rmlSystemInterface.cpp rmlSystemInterface.h
 	rmlTooltips.cpp rmlTooltips.h
+	rmlTouchDrag.h
 	rmlTree.cpp rmlTree.h
 	rmlTreeNode.cpp rmlTreeNode.h
 
@@ -148,4 +149,10 @@ if(BUILD_TESTING)
 	target_link_libraries(juceRmlMouseInputTest PRIVATE juceRmlUi)
 	set_property(TARGET juceRmlMouseInputTest PROPERTY FOLDER "juceRmlUi/test")
 	add_test(NAME juceRmlMouseInputTest COMMAND juceRmlMouseInputTest)
+
+	# header-only, no JUCE or RmlUi
+	add_executable(juceRmlTouchDragTest test/rmlTouchDrag_test.cpp)
+	target_include_directories(juceRmlTouchDragTest PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..)
+	set_property(TARGET juceRmlTouchDragTest PROPERTY FOLDER "juceRmlUi/test")
+	add_test(NAME juceRmlTouchDragTest COMMAND juceRmlTouchDragTest)
 endif()
