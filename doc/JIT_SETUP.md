@@ -43,11 +43,20 @@ The pairing file stops working if the device's passcode is changed or reset [PAI
 1. Turn on **LocalDevVPN**. Wi-Fi must be on; on cellular only, connect the VPN and then turn on Airplane Mode [S1].
 2. Open the app (JIT Probe now, the Monomachine app later).
 3. Enable JIT for it, either way:
-   - In StikDebug: **Enable JIT** → choose the app; or
-   - In the app: tap **Ask StikDebug to enable JIT**. This opens `stikdebug://enable-jit?bundle-id=…&pid=…&script-name=universal.js`, the form given in StikDebug's integration guide [S1]; the README does not document it.
+   - In StikDebug: **Enable JIT** → choose the app. This needs `universal.js` assigned to the app once per device (below); or
+   - In the app: tap **Ask StikDebug to enable JIT**. This opens `stikdebug://enable-jit?bundle-id=…&pid=…&script-name=universal.js`, the form given in StikDebug's integration guide [S1]; the README does not document it. It names the script itself, so it needs no assignment.
+
+   **Assigning the script (once per device, for each app):**
+   1. In StikDebug, go to **Enable JIT**.
+   2. Touch and hold the app (Gearmulator MM, JIT Probe, MM Bench).
+   3. Choose **Assign Script** → **universal.js**. The row then reads "Assigned script universal.js".
+
+   **Why it's needed:** on these TXM devices, StikDebug's list runs a script only for an app that has one assigned, or whose name is in its built-in list (Amethyst, MeloNX, UTM and others; `StikDebug/Support/AutoScriptAssignments.swift`). Our apps are in neither.
+
+   **Without it:** StikDebug launches the app, attaches and detaches within a second. The app sees `debugged=1`, but nothing answers its `brk #0xf00d` request for executable memory. MM's `engine.log` then reads `debugged=1 reason=StikDebug did not service the prepare request`, and MM runs on the interpreter. This was found on the iPhone on 2026-11-27 (IOS_PORT_STATUS).
 4. The probe should then show **PASS**. If it shows **FAIL**, the reason line says which step failed:
    - **"no debugger attached"**: StikDebug did not attach. Check the VPN, the pairing file and the disk-image mount.
-   - **"TXM prepare not serviced"**: StikDebug attached without its `universal.js` script, or this iOS version is not supported yet.
+   - **"TXM prepare not serviced"**: StikDebug attached without its `universal.js` script, or this iOS version is not supported yet. If it was enabled from StikDebug's list, assign the script (step 3).
    - **"region is not executable"** or **"generated code … wrong value"**: the protocol ran but the memory did not behave. Report it.
    - **"Previous run ended during: step …"**: the last run was killed at that step.
 

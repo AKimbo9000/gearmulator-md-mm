@@ -683,6 +683,52 @@ Your screenshots, untethered, JIT through StikDebug. Full MM `trigPressFirmwareT
 - **JUCE standalone menu:** Audio/MIDI Settings… (output device, sample rate, buffer size, MIDI inputs), Save current state…, Load a saved state…, Reset to default state.
 - **New for iOS:** engine badge and reason, Relaunch with JIT, interpreter warning, ROM import from Files with validation, a test tone, Bluetooth MIDI pairing.
 
+### 2026-11-27 (late evening): StikDebug's Enable JIT → Gearmulator MM on the iPhone runs no script
+
+**Symptom (yours):** on the iPhone, JIT Probe passes with StikDebug, but Enable JIT → Gearmulator MM leaves MM on the interpreter, even after force-quitting both. The iPad works.
+
+**Cause (device side, StikDebug's settings):**
+- StikDebug's list runs a script only for an app with one assigned, or whose name is in its built-in list (`AutoScriptAssignments.swift`, commit 63713ea). Gearmulator MM is in neither.
+- So StikDebug launches MM suspended, sends `vAttach` and `D`, and its debugserver exits.
+- MM sees `CS_DEBUGGED`, but nothing answers its `brk #0xf00d` prepare request. After 5 s of retries it stays on the interpreter.
+- **Fix:** in StikDebug's Enable JIT list, touch and hold Gearmulator MM → Assign Script → universal.js. Now in `doc/JIT_SETUP.md`, step 3.
+
+**Both devices compared:**
+
+| | iPhone 17 Pro Max | iPad Pro 13 M4 |
+|---|---|---|
+| MM installed (`devicectl device info apps`) | 2.2.28, built by developer | 2.2.28, built by developer |
+| StikDebug installed | `com.aki.stikdebug` 3.2.2 (our build) | the same |
+| Script assigned to `com.aki.gearmulator.mm` (StikDebug's `bundleScriptMap`) | **none** | **none** |
+| Other StikDebug settings for MM | favourite, recent | recent |
+
+**Signing:** `devicectl` can't read an installed bundle's signature back. The local build (`bin/plugins/Release/Standalone/Gearmulator MM.app`, 15:04) is:
+- signed "Apple Development" with our team;
+- entitlements `application-identifier`, `team-identifier` and `get-task-allow = true`;
+- provisioned by the team wildcard profile, which lists both devices and expires 2027-11-26.
+
+Signing is not the difference: StikDebug does attach (`debugged=1`).
+
+**Evidence:**
+- **MM's `engine.log` on the iPhone:**
+  - Every launch from StikDebug's list today reads `debugged=1 reason=StikDebug did not service the prepare request`: 19:20:47, 19:23:11, 19:23:20, 19:25:02, 19:27:54 and 19:34:29.
+  - The app's own Ask StikDebug button worked on the iPhone: launch at 19:24:38, then `watcher: region acquired … 16MiB` at 19:24:55.
+  - All earlier iPhone JIT launches (13:14–15:01) came from the Mac's LLDB service.
+- **The captured attempt** (`build/stikdebug-iphone-193319/attempt-193423.txt`, streamed with the new `tools/jitprobe/devsyslog.py`):
+  - At 19:34:23 `dtdebugproxyd` spawned debugserver 23797, which launched MM 23798.
+  - runningboardd reported debugserver's exit at 19:34:24.
+  - MM makes its request in a load-time constructor once it is resumed. It writes the `launch:` line after 5 s of unanswered retries: 19:34:29, the same second its UIKit lines start.
+  - A script run keeps debugserver attached until the app's detach request.
+- **The iPad:**
+  - Its `engine.log` has no launch with `debugged=1` and an unanswered request.
+  - Its StikDebug runs today (15:06, 19:24) attached to an MM that was already running, through the app's link, which names `universal.js` itself.
+  - One iPad launch from StikDebug (11:55:44, your run) had its request answered at launch. No assignment is saved on the iPad now, so how that run got its script is unknown.
+- **JIT Probe's iPhone PASS:** its log reads "waiting for a debugger … debugger attached after 4 s". That is an attach to a running probe, the button path.
+
+**App side:** nothing is wrong. The app does what StikDebug's protocol asks. One possible change, not made: when launched with `debugged=1` and the request unanswered, the app could open the `stikdebug://` link itself, which would make the list work without the assignment.
+
+**Tool:** `tools/jitprobe/devsyslog.py` streams a USB device's syslog through usbmuxd and lockdown's `syslog_relay`. It uses the Mac's existing pairing record and needs no root: `log collect --device-udid` needs root, and devicectl has no log command.
+
 ### 2026-11-27 (night): 60 s JIT target met on both devices (0 late blocks, 0 silent callbacks)
 
 | Device | Window from Play | min rtf | mean rtf | Late blocks | Silent callbacks | Play block / budget | Output peaks |
