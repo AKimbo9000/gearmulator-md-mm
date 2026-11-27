@@ -191,40 +191,45 @@ void EditorWindow::resized()
 		const auto safe = getLocalArea(nullptr, iosSafeArea()).getIntersection(getLocalBounds());
 		const auto area = safe.isEmpty() ? getLocalBounds() : safe;
 
-		// The Settings button gets a strip of its own beside the panel or below it, whichever leaves the panel larger
-		// (beside on an iPhone in landscape, below otherwise), so it never covers a control.
+		// The panel takes the whole safe area. The Settings button goes beside the panel or below it where the panel
+		// leaves that much room (portrait, and an iPad in landscape), and otherwise, as on an iPhone in landscape, over
+		// the panel's top right corner, compact: on the Monomachine that is its decorative connector strip ("DC IN",
+		// "POWER"), not a control. A strip of its own there cost the panel 12% of its size.
 		constexpr int bw = 96, bh = 40, gap = 8;
 		const auto skinW = static_cast<float>(m_state.getWidth());
 		const auto skinH = static_cast<float>(m_state.getHeight());
-		const auto fitIn = [&](const int _w, const int _h)
-		{
-			return std::max(0.01f, std::min(static_cast<float>(_w) / skinW, static_cast<float>(_h) / skinH));
-		};
-		auto panelArea = area;
-		bool beside = false;
-		if (m_gearButton)
-		{
-			beside = fitIn(area.getWidth() - bw - 2 * gap, area.getHeight()) > fitIn(area.getWidth(), area.getHeight() - bh - 2 * gap);
-			if (beside)
-				panelArea.removeFromRight(bw + 2 * gap);
-			else
-				panelArea.removeFromBottom(bh + 2 * gap);
-		}
-		const auto fit = fitIn(panelArea.getWidth(), panelArea.getHeight());
+		const auto fit = std::max(0.01f, std::min(static_cast<float>(area.getWidth()) / skinW, static_cast<float>(area.getHeight()) / skinH));
 		m_skinScale = fit;
 		const auto fitW = static_cast<int>(skinW * fit);
 		const auto fitH = static_cast<int>(skinH * fit);
 		if (!m_state.resizeEditor(fitW, fitH))
 			return;
-		const auto panel = juce::Rectangle<int>(fitW, fitH).withCentre(panelArea.getCentre());
+		const auto panel = juce::Rectangle<int>(fitW, fitH).withCentre(area.getCentre());
 		if (auto* root = m_state.getUiRoot())
 			root->setTopLeftPosition(panel.getPosition());
 		if (m_gearButton)
 		{
-			if (beside)
+			const auto roomBeside = area.getRight() - panel.getRight();
+			const auto roomBelow = area.getBottom() - panel.getBottom();
+			const juce::Colour background(0xff2b3138);
+			if (roomBelow >= bh + 2 * gap)
+			{
+				m_gearButton->setBounds(std::min(panel.getRight(), area.getRight() - gap) - bw, panel.getBottom() + gap, bw, bh);
+				m_gearButton->setColour(juce::TextButton::buttonColourId, background);
+			}
+			else if (roomBeside >= bw + 2 * gap)
+			{
 				m_gearButton->setBounds(panel.getRight() + gap, panel.getY(), bw, bh);
+				m_gearButton->setColour(juce::TextButton::buttonColourId, background);
+			}
 			else
-				m_gearButton->setBounds(panel.getRight() - bw, panel.getBottom() + gap, bw, bh);
+			{
+				// the connector strip is about 6% of the panel's height; inset past the corner screw
+				const auto h = juce::jlimit(24, bh, juce::roundToInt(static_cast<float>(fitH) * 0.06f));
+				const auto w = juce::roundToInt(static_cast<float>(h) * 3.4f);
+				m_gearButton->setBounds(panel.getRight() - w - juce::roundToInt(static_cast<float>(fitW) * 0.025f), panel.getY() + 2, w, h);
+				m_gearButton->setColour(juce::TextButton::buttonColourId, background.withAlpha(0.85f));
+			}
 			m_gearButton->toFront(false);
 		}
 	}
