@@ -649,6 +649,10 @@ namespace juceRmlUi
 
 	void RmlComponent::mouseDown(const juce::MouseEvent& _event)
 	{
+#if JUCE_IOS
+		if (routeTouchDown(_event))
+			return;
+#endif
 		// A press here while a list of another window is up only closes it, as with a native menu; juce dismisses
 		// the list and hands the press on. A context-menu press goes through, so that it can open the next menu
 		// where it was made. In this window's own list juce holds the press back itself.
@@ -674,6 +678,10 @@ namespace juceRmlUi
 
 	void RmlComponent::mouseUp(const juce::MouseEvent& _event)
 	{
+#if JUCE_IOS
+		if (routeTouchMoveOrUp(_event, TouchEvent::Phase::Up))
+			return;
+#endif
 		if (m_pressSwallowed)
 		{
 			m_pressSwallowed = false;
@@ -727,6 +735,10 @@ namespace juceRmlUi
 
 	void RmlComponent::mouseMove(const juce::MouseEvent& _event)
 	{
+#if JUCE_IOS
+		if (!touchKeepsPointer(_event))
+			return;
+#endif
 		Component::mouseMove(_event);
 		RmlInterfaces::ScopedAccess access(*this);
 
@@ -740,6 +752,10 @@ namespace juceRmlUi
 
 	void RmlComponent::mouseDrag(const juce::MouseEvent& _event)
 	{
+#if JUCE_IOS
+		if (routeTouchMoveOrUp(_event, TouchEvent::Phase::Move))
+			return;
+#endif
 		if (m_pressSwallowed)
 			return;
 
@@ -759,6 +775,10 @@ namespace juceRmlUi
 
 	void RmlComponent::mouseExit(const juce::MouseEvent& _event)
 	{
+#if JUCE_IOS
+		if (!touchKeepsPointer(_event))
+			return;
+#endif
 		Component::mouseExit(_event);
 		RmlInterfaces::ScopedAccess access(*this);
 		if (m_rmlContext)
@@ -769,6 +789,10 @@ namespace juceRmlUi
 
 	void RmlComponent::mouseEnter(const juce::MouseEvent& _event)
 	{
+#if JUCE_IOS
+		if (!touchKeepsPointer(_event))
+			return;
+#endif
 		Component::mouseEnter(_event);
 		RmlInterfaces::ScopedAccess access(*this);
 
@@ -777,6 +801,169 @@ namespace juceRmlUi
 		const auto pos = toRmlPosition(_event);
 		m_rmlContext->ProcessMouseMove(pos.x, pos.y, toRmlModifiers(_event));
 		enqueueUpdate();
+	}
+
+	void RmlComponent::setTouchHandler(TouchHandler _handler)
+	{
+		m_touchHandler = std::move(_handler);
+	}
+
+	juce::Point<float> RmlComponent::getPointsPerContextPixel() const
+	{
+		jassert(juce::MessageManager::existsAndIsCurrentThread());
+		if (!m_rmlContext)
+			return {};
+		const auto dimensions = m_rmlContext->GetDimensions();
+		// screen bounds include any transform the editor window applies to fit the screen
+		const auto screen = getScreenBounds();
+		if (dimensions.x <= 0 || dimensions.y <= 0)
+			return {};
+		return { static_cast<float>(screen.getWidth()) / static_cast<float>(dimensions.x),
+			static_cast<float>(screen.getHeight()) / static_cast<float>(dimensions.y) };
+	}
+
+	RmlComponent::TouchEvent RmlComponent::makeTouchEvent(const juce::MouseEvent& _event, const TouchEvent::Phase _phase) const
+	{
+		TouchEvent e;
+		e.id = _event.source.getIndex();
+		e.phase = _phase;
+		// the float position: UIKit reports fractions of a point, which the integer toRmlPosition() would drop
+		const auto dimensions = m_rmlContext ? m_rmlContext->GetDimensions() : Rml::Vector2i(getWidth(), getHeight());
+		e.position = { getWidth() > 0 ? _event.position.x * static_cast<float>(dimensions.x) / static_cast<float>(getWidth()) : _event.position.x,
+			getHeight() > 0 ? _event.position.y * static_cast<float>(dimensions.y) / static_cast<float>(getHeight()) : _event.position.y };
+		e.timeSeconds = static_cast<double>(_event.eventTime.toMilliseconds()) / 1000.0;
+		return e;
+	}
+
+	namespace
+	{
+		bool isTouchDown(const int _id)
+		{
+			for (const auto& source : juce::Desktop::getInstance().getMouseSources())
+			{
+				if (source.isTouch() && source.getIndex() == _id)
+					return source.isDragging();
+			}
+			return false;
+		}
+
+		bool eraseId(std::vector<int>& _ids, const int _id)
+		{
+			const auto it = std::find(_ids.begin(), _ids.end(), _id);
+			if (it == _ids.end())
+				return false;
+			_ids.erase(it);
+			return true;
+		}
+
+		bool containsId(const std::vector<int>& _ids, const int _id)
+		{
+			return std::find(_ids.begin(), _ids.end(), _id) != _ids.end();
+		}
+	}
+
+	// A finger whose lift never arrived (iOS can drop touchesEnded, for example around system gestures) would hold
+	// its control, or RmlUi's pointer, forever. Each new finger checks JUCE for fingers that are no longer down.
+	void RmlComponent::releaseLostTouches()
+	{
+		for (size_t i = m_claimedTouches.size(); i-- > 0;)
+		{
+			const int id = m_claimedTouches[i];
+			if (isTouchDown(id))
+				continue;
+			m_claimedTouches.erase(m_claimedTouches.begin() + static_cast<std::ptrdiff_t>(i));
+			if (m_touchHandler)
+			{
+				TouchEvent e;
+				e.id = id;
+				e.phase = TouchEvent::Phase::Up;
+				e.timeSeconds = juce::Time::getMillisecondCounterHiRes() / 1000.0;
+				m_touchHandler(e);
+			}
+		}
+		for (size_t i = m_ignoredTouches.size(); i-- > 0;)
+		{
+			if (!isTouchDown(m_ignoredTouches[i]))
+				m_ignoredTouches.erase(m_ignoredTouches.begin() + static_cast<std::ptrdiff_t>(i));
+		}
+		if (m_pointerTouch >= 0 && !isTouchDown(m_pointerTouch))
+			m_pointerTouch = -1;
+	}
+
+	bool RmlComponent::routeTouchDown(const juce::MouseEvent& _event)
+	{
+		if (!_event.source.isTouch() || !m_rmlContext)
+			return false;
+
+		const int id = _event.source.getIndex();
+		{
+			RmlInterfaces::ScopedAccess access(*this);
+			eraseId(m_claimedTouches, id);
+			eraseId(m_ignoredTouches, id);
+			if (m_pointerTouch == id)
+				m_pointerTouch = -1;
+			releaseLostTouches();
+
+			if (m_touchHandler && !popupWindow::isOpen() && m_touchHandler(makeTouchEvent(_event, TouchEvent::Phase::Down)))
+			{
+				m_claimedTouches.push_back(id);
+				// The move JUCE sends just before a touch-down may have put RmlUi's hover on this control. No other
+				// finger owns the pointer, so take the hover away again.
+				if (m_pointerTouch < 0 && !m_pressedMouseButtons)
+					m_rmlContext->ProcessMouseLeave();
+				enqueueUpdate();
+				return true;
+			}
+		}
+
+		if (m_pointerTouch >= 0)
+		{
+			// another finger owns RmlUi's pointer: this one would move it away from what that finger holds
+			m_ignoredTouches.push_back(id);
+			return true;
+		}
+		m_pointerTouch = id;
+		return false;
+	}
+
+	bool RmlComponent::routeTouchMoveOrUp(const juce::MouseEvent& _event, const TouchEvent::Phase _phase)
+	{
+		if (!_event.source.isTouch())
+			return false;
+
+		const int id = _event.source.getIndex();
+		if (containsId(m_claimedTouches, id))
+		{
+			RmlInterfaces::ScopedAccess access(*this);
+			if (_phase == TouchEvent::Phase::Up)
+				eraseId(m_claimedTouches, id);
+			if (m_touchHandler)
+				m_touchHandler(makeTouchEvent(_event, _phase));
+			enqueueUpdate();
+			return true;
+		}
+		if (containsId(m_ignoredTouches, id))
+		{
+			if (_phase == TouchEvent::Phase::Up)
+				eraseId(m_ignoredTouches, id);
+			return true;
+		}
+		if (_phase == TouchEvent::Phase::Up && m_pointerTouch == id)
+			m_pointerTouch = -1;
+		return false;
+	}
+
+	// Enter, exit and buttonless moves of a finger reach RmlUi only if they cannot disturb another finger: never for
+	// a claimed or ignored finger, and not while a different finger owns RmlUi's pointer. Pointer hover (an iPad
+	// trackpad or mouse) arrives as finger 0 without buttons and passes when nothing else is down.
+	bool RmlComponent::touchKeepsPointer(const juce::MouseEvent& _event) const
+	{
+		if (!_event.source.isTouch())
+			return true;
+		const int id = _event.source.getIndex();
+		if (containsId(m_claimedTouches, id) || containsId(m_ignoredTouches, id))
+			return false;
+		return m_pointerTouch < 0 || m_pointerTouch == id;
 	}
 
 	namespace

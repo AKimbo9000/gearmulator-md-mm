@@ -139,6 +139,25 @@ namespace juceRmlUi
 		juce::Point<int> toRmlPosition(const juce::MouseEvent& _e) const;
 		juce::Point<int> toRmlPosition(int _x, int _y) const;
 
+		// Multi-touch on iOS. RmlUi has a single pointer, so on its own a second finger moves that pointer and lets
+		// go of whatever the first finger holds. The touch handler is offered every finger before RmlUi sees it:
+		// returning true for Down claims the finger, and its moves and its lift go to the handler only, never to
+		// RmlUi. Several claimed fingers can hold controls at once. Unclaimed fingers share RmlUi's pointer: the
+		// first owns it until it lifts, others landing meanwhile are ignored. The handler runs on the message
+		// thread with the access lock held. Only iOS builds call it.
+		struct TouchEvent
+		{
+			enum class Phase : uint8_t { Down, Move, Up };
+			int id = 0;							// JUCE touch index, stable while the finger is down
+			Phase phase = Phase::Down;
+			juce::Point<float> position;		// context pixels, sub-pixel
+			double timeSeconds = 0.0;			// event time
+		};
+		using TouchHandler = std::function<bool(const TouchEvent&)>;
+		void setTouchHandler(TouchHandler _handler);
+		// Screen points per context pixel on each axis, (0,0) before the context exists. Message thread only.
+		juce::Point<float> getPointsPerContextPixel() const;
+
 		float getOpenGLRenderingScale() const;
 		// Fork API kept for the MD/MM pixel-perfect panel. The software renderer now always renders at the
 		// device pixel density (see m_softwareRenderScale), so this only records the request.
@@ -268,6 +287,17 @@ namespace juceRmlUi
 		uint32_t m_pressedMouseButtons = 0;
 		// The press that closed a list of another window, which goes no further, see mouseDown()
 		bool m_pressSwallowed = false;
+
+		// multi-touch routing, see setTouchHandler(); used on iOS only
+		bool routeTouchDown(const juce::MouseEvent& _event);
+		bool routeTouchMoveOrUp(const juce::MouseEvent& _event, TouchEvent::Phase _phase);
+		bool touchKeepsPointer(const juce::MouseEvent& _event) const;
+		TouchEvent makeTouchEvent(const juce::MouseEvent& _event, TouchEvent::Phase _phase) const;
+		void releaseLostTouches();
+		TouchHandler m_touchHandler;
+		std::vector<int> m_claimedTouches;
+		std::vector<int> m_ignoredTouches;
+		int m_pointerTouch = -1;			// the unclaimed finger that owns RmlUi's pointer, -1 for none
 		juce::ModifierKeys m_currentModifierKeys;
 
 		bool m_updating = true;
