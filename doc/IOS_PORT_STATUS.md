@@ -20,7 +20,7 @@ produced it.
 | 4 Simulator build + self-test | not started |
 | 5 Device build + self-test | not started |
 | 6 AUv3 + Files ROM import | not started |
-| C Standalone Monomachine app (iPad, iPhone) | 60 s JIT runs: min rtf ≥ 1.4, 0 silent callbacks; the first-Play block is at the 5.35 ms edge (5.24–5.87 ms), 0 or 1 late block depending on the run; see the 2026-11-27 (evening) entry |
+| C Standalone Monomachine app (iPad, iPhone) | **60 s JIT target met on both devices**: 0 late blocks, 0 silent callbacks, min rtf 2.47 (iPhone) and 2.30 (iPad); StikDebug-launched iPad run on this build still to do; see the 2026-11-27 (night) entry |
 
 ## Environment
 
@@ -682,6 +682,43 @@ Your screenshots, untethered, JIT through StikDebug. Full MM `trigPressFirmwareT
 - **Settings › Skins:** available skins (Activate, Export), Open skins folder; Developer Options (RmlUi debugger, reload via F5, MCP server, disable parameter tooltips).
 - **JUCE standalone menu:** Audio/MIDI Settings… (output device, sample rate, buffer size, MIDI inputs), Save current state…, Load a saved state…, Reset to default state.
 - **New for iOS:** engine badge and reason, Relaunch with JIT, interpreter warning, ROM import from Files with validation, a test tone, Bluetooth MIDI pairing.
+
+### 2026-11-27 (night): 60 s JIT target met on both devices (0 late blocks, 0 silent callbacks)
+
+| Device | Window from Play | min rtf | mean rtf | Late blocks | Silent callbacks | Play block / budget | Output peaks |
+|---|---|---|---|---|---|---|---|
+| iPhone 17 Pro Max | t=12–83, 72 s | **2.470** | 2.595 | **0** | 0 | 7.19 / 10.7 ms | 0.63–0.98 |
+| iPad Pro 13 M4 | t=12–85, 74 s | **2.303** | 2.374 | **0** | 0 | 7.90 / 10.7 ms | 0.60–0.92 |
+
+- **Runs:** launched from the Mac with the JIT (`build/device-runs/{iphone,ipad}-w2-150117/`). The build was commit 9acd2786 minus two test hooks it later dropped.
+- **Audio:** 187 callbacks/s (48 kHz, 257 frames) and 94 emulation blocks/s of 514 frames.
+
+**What changed:** the offload worker renders two audio-callback buffers per emulation block (`offloadWorkFactor()`, 514 frames, 10.7 ms).
+- **Why:** before, the first-Play block took 5.5–6.2 ms on the iPad against a 5.35 ms budget, failing 0 of 3 full runs. Now it may take up to the block's 10.7 ms.
+- **Queue:** it holds the block being rendered plus at least one more, so the default cushion dropped from 25 to 10 ms (10.7 ms in effect).
+- **Latency (estimated from the queue sizes, not measured):** about 23 ms (the 5.35 ms buffer plus about 850 queued frames), against about 33 ms with 257-frame blocks and the 25 ms cushion.
+- **MIDI:** events from the second callback keep their position within the block.
+- **Trade-off:** touches and MIDI reach the emulation once per 10.7 ms instead of once per 5.35 ms.
+- **Side effect:** bigger blocks raised steady rtf by about 15% (fixed costs per block are spread further).
+
+**Also in this round:**
+- **Build configuration:** the device build applies the PGO profile to dsp56kEmu's peripherals and the JIT's runtime code too: `-DGEARMULATOR_MDMM_APPLE_PGO_DSP=ON -DGEARMULATOR_MDMM_APPLE_PGO_JIT_COMPILER=OFF`, profile retrained on the iPad. The compiler's sources opt out with `-fno-profile-instr-use`.
+- **Tried and dropped:**
+  - **Audio workgroup join**, A/B on the iPad: rtf 1.9 against 2.3, Play block 6.2–6.35 against 5.5–5.7 ms.
+  - **Other real-time computation shares** (0.2, 0.9, none): no better than 0.5.
+  - **A 512-frame IO buffer:** iOS kept 257 frames on the built-in speaker.
+  - **A 44.1 kHz session**, which would skip resampling: the built-in audio of both devices offers 48 kHz only. It is retried at each launch, in case an interface allows it.
+  - **Covering the panel with the settings sheet:** the Play block did not change (5.65 ms), so UI rendering is not the cause.
+
+**What is left for you**
+1. **StikDebug run on the iPad with the installed build** (for the record the goal asked for):
+   1. Connect LocalDevVPN.
+   2. Open Gearmulator MM from StikDebug.
+   3. Press Play and leave it for 60 s or more.
+   4. Tell me. I read `realtime.log` over Wi-Fi.
+2. **Play live a little:** check that touches and MIDI don't feel later than before. If they do, Settings › Audio cushion › One block is the lowest setting.
+3. **On the iPhone in landscape:** check the home bar on the panel's bottom strip, and that the corner Settings button is easy to hit.
+4. **Still by hand:** Bluetooth MIDI pairing, importing through the Files picker, and long-press.
 
 ### 2026-11-27 (evening): JIT compiler 18% faster with identical code; the first-Play block still at the edge
 
