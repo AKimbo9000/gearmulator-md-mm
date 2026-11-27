@@ -80,6 +80,8 @@ EditorWindow::EditorWindow(juce::AudioProcessor& _p, PluginEditorState& _s, juce
 		});
 	};
 	addAndMakeVisible(*m_gearButton);
+	// landscape only, as in the Info.plist (source/cmake/juce.cmake): the view controller reports these orientations
+	juce::Desktop::getInstance().setOrientationsEnabled(juce::Desktop::rotatedClockwise | juce::Desktop::rotatedAntiClockwise);
 	// test hook (device screenshots of the settings page, which cannot be tapped from the Mac)
 	if (std::getenv("GEARMULATOR_IOS_OPEN_SETTINGS"))
 		openSettingsWhenReady(juce::Component::SafePointer<EditorWindow>(this), 30);

@@ -177,10 +177,15 @@ macro(removeJuceDependencies targetName)
 	set_target_properties(${targetName} PROPERTIES INTERFACE_LINK_LIBRARIES "${pluginLibs}")
 endmacro()
 
-# iOS: scene lifecycle (required by iOS 27, see elektron/md/mdJucePlugin/iosSceneShim.mm) and Files app access to
-# Documents, where firmware images are imported
+# iOS: scene lifecycle (required by iOS 27, see elektron/md/mdJucePlugin/iosSceneShim.mm), Files app access to
+# Documents, where firmware images are imported, and landscape only on iPhone and iPad: the panels are about 2:1, and in
+# portrait they fill a third of the screen. iPadOS ignores the orientation list of an app that can run in a window
+# beside others, hence UIRequiresFullScreen; jucePluginEditorLib/pluginEditorWindow.cpp also limits JUCE's orientations
 if(IOS)
-	set(TUS_IOS_PLIST_ARGS PLIST_TO_MERGE "<plist><dict><key>UIApplicationSceneManifest</key><dict><key>UIApplicationSupportsMultipleScenes</key><false/><key>UISceneConfigurations</key><dict><key>UIWindowSceneSessionRoleApplication</key><array><dict><key>UISceneConfigurationName</key><string>Default</string><key>UISceneDelegateClassName</key><string>TusSceneDelegate</string></dict></array></dict></dict><key>NSBluetoothAlwaysUsageDescription</key><string>Bluetooth MIDI: connect wireless MIDI keyboards and controllers.</string><key>UIFileSharingEnabled</key><true/><key>LSSupportsOpeningDocumentsInPlace</key><true/></dict></plist>")
+	set(TUS_IOS_PLIST_ARGS
+		IPHONE_SCREEN_ORIENTATIONS UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight
+		IPAD_SCREEN_ORIENTATIONS UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight
+		PLIST_TO_MERGE "<plist><dict><key>UIApplicationSceneManifest</key><dict><key>UIApplicationSupportsMultipleScenes</key><false/><key>UISceneConfigurations</key><dict><key>UIWindowSceneSessionRoleApplication</key><array><dict><key>UISceneConfigurationName</key><string>Default</string><key>UISceneDelegateClassName</key><string>TusSceneDelegate</string></dict></array></dict></dict><key>NSBluetoothAlwaysUsageDescription</key><string>Bluetooth MIDI: connect wireless MIDI keyboards and controllers.</string><key>UIFileSharingEnabled</key><true/><key>LSSupportsOpeningDocumentsInPlace</key><true/><key>UIRequiresFullScreen</key><true/></dict></plist>")
 else()
 	set(TUS_IOS_PLIST_ARGS "")
 endif()
