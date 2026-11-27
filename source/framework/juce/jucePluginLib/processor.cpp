@@ -49,6 +49,9 @@ namespace synthLib
 #include <thread>
 #include <pthread.h>
 #include <time.h>
+#include <mach/mach.h>
+#include <mach/mach_time.h>
+#include <mach/thread_policy.h>
 extern "C" const char* tusEngineDescription();
 std::string tusAudioSessionDescription();
 uint32_t (*g_tusTransportCounter)() = nullptr;
@@ -60,6 +63,9 @@ void tusRealtimeLast(double& _rtf, double& _callbacksPerSecond, double& _peak);
 void tusPlayTestTone(double _seconds);
 // set by the instrument: true when the emulation must not run on the real-time audio thread
 bool (*g_tusOffloadProcessing)() = nullptr;
+// set by the instrument: true when the offload worker may run with a real-time policy, which the kernel withdraws from
+// a thread that overruns its period (the interpreter, below real time, would be demoted to the efficiency cores)
+bool (*g_tusOffloadRealtime)() = nullptr;
 // audio queued between the emulation worker and the audio callback beyond one block (Settings > Audio): it absorbs
 // blocks that take longer than their duration, such as the JIT compiling code the firmware runs for the first time
 // (18 ms for one 5.35 ms block at the first Play, IOS_PORT_STATUS). Applied when the audio device next starts.
@@ -73,6 +79,7 @@ namespace
 	OffloadStats offloadStats();
 	std::atomic<double> g_offloadCushionMs{25.0};
 	std::atomic<double> g_offloadActiveCushionMs{0.0};
+	std::atomic<bool> g_offloadRealtimeActive{false};
 }
 void tusSetOffloadCushionMs(const double _ms) { g_offloadCushionMs = std::clamp(_ms, 0.0, 200.0); }
 double tusOffloadCushionMs() { return g_offloadCushionMs.load(); }
@@ -173,10 +180,10 @@ namespace
 							e.sincePlayNs < 0 ? "none " : "", e.sincePlayNs < 0 ? 0.0 : double(e.sincePlayNs) * 1e-9, e.play);
 					}
 					const double maxBlockMs = double(maxBlockNs.exchange(0)) * 1e-6;
-					std::fprintf(f, "t=%llu window_rtf=%.3f min_rtf=%.3f max_block_ms=%.2f callbacks_per_s=%llu avg_block=%.0f samplerate=%.0f peak=%.5f late_blocks=%llu late_blocks_since_play=%llu offload=%d cushion_ms=%.1f io_callbacks_per_s=%llu io_underruns=%llu io_underruns_since_play=%llu jit_code_bytes=%llu\n",
+					std::fprintf(f, "t=%llu window_rtf=%.3f min_rtf=%.3f max_block_ms=%.2f callbacks_per_s=%llu avg_block=%.0f samplerate=%.0f peak=%.5f late_blocks=%llu late_blocks_since_play=%llu offload=%d offload_rt=%d cushion_ms=%.1f io_callbacks_per_s=%llu io_underruns=%llu io_underruns_since_play=%llu jit_code_bytes=%llu\n",
 						(unsigned long long)t, rtf, minRtf < 1e8 ? minRtf : 0.0, maxBlockMs, (unsigned long long)(b - lastBlocks),
 						b > lastBlocks ? double(sm - lastSamples) / double(b - lastBlocks) : 0.0, sampleRate.load(), peak,
-						(unsigned long long)u, (unsigned long long)underrunsSincePlay, off.active ? 1 : 0, g_offloadActiveCushionMs.load(),
+						(unsigned long long)u, (unsigned long long)underrunsSincePlay, off.active ? 1 : 0, g_offloadRealtimeActive.load() ? 1 : 0, g_offloadActiveCushionMs.load(),
 						(unsigned long long)(off.ioCallbacks - lastIo), (unsigned long long)off.ioUnderruns,
 						(unsigned long long)(off.ioUnderruns - std::min(ioUnderrunsAtPlay.load(), off.ioUnderruns)),
 						(unsigned long long)(g_tusJitCodeBytes ? g_tusJitCodeBytes() : 0));
@@ -319,6 +326,8 @@ namespace
 			m_fifo.setTotalSize(capacity + 1);
 			m_fifo.reset();
 			m_work.setSize(m_channels, m_maxBlock);
+			m_periodNs = _sampleRate > 0 ? 1e9 * double(m_maxBlock) / _sampleRate : 0.0;
+			m_realtime = m_periodNs > 0 && g_tusOffloadRealtime && g_tusOffloadRealtime();
 			for(auto* b : {&m_midiIn, &m_midiWork, &m_midiOut, &m_ioCarry})
 			{
 				b->clear();
@@ -336,6 +345,7 @@ namespace
 		{
 			m_active = false;
 			g_offloadActiveCushionMs = 0.0;
+			g_offloadRealtimeActive = false;
 			{
 				std::lock_guard l(m_mutex);
 				m_quit = true;
@@ -411,6 +421,8 @@ namespace
 		{
 			pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
 			pthread_setname_np("TUS emulation");
+			if(m_realtime)
+				makeRealtime();
 			t_inOffloadWorker = true;
 			for(;;)
 			{
@@ -450,9 +462,28 @@ namespace
 			}
 		}
 
+		// the policy CoreAudio gives its IO thread: one block per period, due by the end of it. The JIT uses about half of
+		// each period; the cushion covers a block that takes longer
+		void makeRealtime() const
+		{
+			mach_timebase_info_data_t tb{};
+			mach_timebase_info(&tb);
+			const auto ticks = [&](const double _ns) { return static_cast<uint32_t>(_ns * double(tb.denom) / double(tb.numer)); };
+			thread_time_constraint_policy_data_t policy{};
+			policy.period = ticks(m_periodNs);
+			policy.computation = ticks(m_periodNs * 0.5);
+			policy.constraint = ticks(m_periodNs);
+			policy.preemptible = TRUE;
+			const auto r = thread_policy_set(pthread_mach_thread_np(pthread_self()), THREAD_TIME_CONSTRAINT_POLICY,
+				reinterpret_cast<thread_policy_t>(&policy), THREAD_TIME_CONSTRAINT_POLICY_COUNT);
+			g_offloadRealtimeActive = r == KERN_SUCCESS;
+		}
+
 		juce::AudioProcessor* m_processor = nullptr;		// processBlock is public here, the override runs
 		int m_channels = 0;
 		int m_maxBlock = 0;
+		double m_periodNs = 0;
+		bool m_realtime = false;
 		std::atomic<int> m_ioBlock{0};
 		std::atomic<bool> m_active{false};
 		bool m_quit = false;

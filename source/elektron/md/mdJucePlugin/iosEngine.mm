@@ -39,6 +39,7 @@ extern uint32_t (*g_tusTransportCounter)();
 extern uint64_t (*g_tusJitCodeBytes)();
 // jucePluginLib/processor.cpp: run the emulation off the real-time audio thread when this returns true
 extern bool (*g_tusOffloadProcessing)();
+extern bool (*g_tusOffloadRealtime)();
 namespace
 {
 	// Both engines run the emulation on the offload worker. The interpreter cannot meet the audio callback's deadline,
@@ -46,6 +47,8 @@ namespace
 	// emits ~80 KB of code in one 5.35 ms block, which then takes 18 ms (IOS_PORT_STATUS), and the worker's cushion
 	// absorbs that where the audio callback would play a gap.
 	bool offloadEmulation() { return true; }
+	// the JIT keeps up with a real-time period; the interpreter overruns every one and would be demoted
+	bool offloadRealtime() { return dsp56k::g_runtimeUseJIT; }
 }
 
 extern "C" const char* tusEngineDescription() { return g_engineDescription.load(); }
@@ -66,6 +69,7 @@ __attribute__((constructor)) static void tusChooseEngine()
 	g_tusTransportCounter = &playPresses;
 	g_tusJitCodeBytes = &jitCodeBytes;
 	g_tusOffloadProcessing = &offloadEmulation;
+	g_tusOffloadRealtime = &offloadRealtime;
 
 	const bool debugged = stikIsDebugged();
 	void* rx = nullptr;
