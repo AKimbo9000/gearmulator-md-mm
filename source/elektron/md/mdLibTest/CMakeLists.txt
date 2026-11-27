@@ -325,6 +325,11 @@ set_tests_properties(mdTrigPressFirmwareTest mmTrigPressFirmwareTest PROPERTIES
 	LABELS "Integration;FirmwareTest" SKIP_RETURN_CODE 77 TIMEOUT 600)
 set_property(TARGET trigPressFirmwareTest PROPERTY FOLDER "Elektron/test")
 
+# JIT compile benchmark (iOS port): recompiles the firmware's working set every block; not a ctest
+add_executable(mmJitCompileBench mmJitCompileBench.cpp)
+target_link_libraries(mmJitCompileBench PRIVATE mdLib)
+set_property(TARGET mmJitCompileBench PROPERTY FOLDER "Elektron/test")
+
 # Shared external regressions for the independent MM workaround removals.
 add_executable(mmAudioFirmwareTest mmAudioFirmwareTest.cpp)
 target_link_libraries(mmAudioFirmwareTest PRIVATE mdLib)
