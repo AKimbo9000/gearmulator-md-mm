@@ -20,7 +20,7 @@ produced it.
 | 4 Simulator build + self-test | not started |
 | 5 Device build + self-test | not started |
 | 6 AUv3 + Files ROM import | not started |
-| C Standalone Monomachine app (iPad, iPhone) | 60 s JIT runs on both devices: min rtf ≥ 1.89, 0 silent callbacks, **1 late block** (the first Play's JIT compile); see the 2026-11-27 (afternoon) entry |
+| C Standalone Monomachine app (iPad, iPhone) | 60 s JIT runs: iPhone 0 late blocks (Play block 5.29 ms, 0.06 ms margin), iPad **1 late block** (5.91 ms); min rtf ≥ 1.56, 0 silent callbacks; see the 2026-11-27 (late afternoon) entry |
 
 ## Environment
 
@@ -682,6 +682,68 @@ Your screenshots, untethered, JIT through StikDebug. Full MM `trigPressFirmwareT
 - **Settings › Skins:** available skins (Activate, Export), Open skins folder; Developer Options (RmlUi debugger, reload via F5, MCP server, disable parameter tooltips).
 - **JUCE standalone menu:** Audio/MIDI Settings… (output device, sample rate, buffer size, MIDI inputs), Save current state…, Load a saved state…, Reset to default state.
 - **New for iOS:** engine badge and reason, Relaunch with JIT, interpreter warning, ROM import from Files with validation, a test tone, Bluetooth MIDI pairing.
+
+### 2026-11-27 (late afternoon): the first-Play block on both devices; home indicator on the panel's chin
+
+**Where the 60 s target stands now** (min rtf ≥ 1.2 and 0 underruns after Play, where an underrun is a block that takes longer than its 5.35 ms duration):
+
+| Device | Window from Play | min rtf | Late blocks | Silent callbacks | Play block |
+|---|---|---|---|---|---|
+| iPhone 17 Pro Max | t=12–83, 72 s | 1.567 | **0** | 0 | 5.29 ms |
+| iPad Pro 13 M4 | t=12–85, 74 s | 1.934 | **1** | 0 | 5.91 ms |
+
+- **Runs:** launched from the Mac, same build on both devices, at 13:29 (`build/device-runs/{iphone,ipad}-pgomcu-132915/`).
+- **iPhone:** passes in this run, but by 0.06 ms. Across runs its Play block measured 5.29–5.63 ms. Its steady rtf was low in this run (1.63 before Play, against 2.0–2.4 earlier), so the phone was probably warm from back-to-back runs.
+- **iPad:** fails, 0.56 ms over.
+- **StikDebug:** a StikDebug-launched run on this build is still to do.
+
+**What the Play block is made of** (new counters in the DSP core, dsp56300 e611d89e; `late_block` lines now carry them):
+- **Compiling: 1.7–2.0 ms.** 174–180 blocks in 12 new chains (the DSP enters 12 new addressing modes at Play). Codegen is 1.2–1.4 ms, finalize 0.3 ms, add 0.1 ms, chain creation 0.05 ms.
+- **Emulated work: 3.9–4.0 ms.** The firmware starts the sequencer. A normal block is about 2.6 ms, and some blocks before Play reach 5.4 ms with no compiling at all.
+
+**What was tried, with the iPhone/iPad Play block:**
+
+| Change | Play block | Kept |
+|---|---|---|
+| (before) emulation on the worker | 21.2 / 20.1 ms | — |
+| copy-on-write dispatch tables (dsp56300 98ae282a) | 5.76 / — ms | yes |
+| real-time policy for the worker | 5.59–5.61 / 6.32 ms | yes |
+| worker joins the audio device's workgroup | 6.23 / — ms, rtf 1.83–1.94 | **no**, no gain |
+| ThinLTO + OPTIMIZE_DSP for the device build | 5.41–5.63 / 5.82 ms | yes |
+| PGO trained on the iPhone, all four libraries | 6.02 / 6.06 ms (compile 1.75 → 2.02 ms); steady rtf +8% | **no**: the JIT compiler is cold in training and gets optimised for size |
+| PGO on mdLib + 68kEmu only (`GEARMULATOR_MDMM_APPLE_PGO_DSP=OFF`) | 5.29 / 5.91 ms | yes |
+
+- **Noise:** about ±0.3 ms between runs of the same build, so single runs cannot rank the last three rows reliably.
+- **What would close the iPad's gap:** a compiler about 35% faster (codegen ~7.6 µs per block). That is a project of its own. It needs a recompile-heavy benchmark on the Mac: in a normal run the compiler gets only a few 1 ms samples there.
+
+**Device build configuration** (build dir `build/ios-mm`; the profile is not committed, regenerate it as below):
+```bash
+cmake build/ios-mm -DGEARMULATOR_MDMM_APPLE_THINLTO=ON -DGEARMULATOR_MDMM_APPLE_OPTIMIZE_DSP=ON \
+  -DGEARMULATOR_MDMM_APPLE_PGO_MODE=use -DGEARMULATOR_MDMM_APPLE_PGO_DSP=OFF \
+  -DGEARMULATOR_MDMM_APPLE_PGO_PROFILE=$PWD/build/pgo/mm-ios-arm64.profdata
+```
+To regenerate the profile:
+1. Configure with `-DGEARMULATOR_MDMM_APPLE_PGO_MODE=generate` and build.
+2. Run `GEARMULATOR_MM_AUTOPLAY_SECONDS=12 GEARMULATOR_PGO_WRITE_SECONDS=80 tools/jitprobe/lldb_jit_run.sh … 85`.
+3. Copy `Documents/mm-<pid>.profraw` off the device with `devicectl device copy from`.
+4. Merge it: `xcrun llvm-profdata merge -o build/pgo/mm-ios-arm64.profdata mm.profraw`.
+
+**Also this round:**
+- **Device restarts mid-play:** iOS restarted the audio device when the IO buffer changed from 257 to 253 frames, 20 s after Play, and one callback came up 4 frames short. The worker now carries the queued audio and pending MIDI across such a restart (`restarts_carried` in the log).
+- **Home indicator on the chin (your request):** on an iPhone in landscape the panel reaches the screen's bottom edge, and the home indicator sits on its chin, the strip of decorative screws below the step buttons and their numbers. It is allowed because no control is under the indicator: the chin is 25 pt against the 21 pt inset, and the step numbers end 4 pt above it. The panel is now the full safe width, 832 pt. iPads, limited by width, keep the centred layout. Checked in the Simulator.
+- **Landscape only, both devices** (from the previous entry): installed.
+
+**What you should do**
+1. **StikDebug run on the iPad with the installed build:**
+   1. Connect LocalDevVPN.
+   2. Open Gearmulator MM from StikDebug.
+   3. Press Play and leave it for 60 s or more.
+   4. Tell me. I read `realtime.log` over Wi-Fi.
+   - Expect 0 silent callbacks, min rtf about 1.9, and probably 1 late block, the Play block at about 5.9 ms.
+2. **Look at the iPhone** in landscape: the home bar should sit on the panel's bottom strip, and the step buttons should still be easy to press. Check that the Settings button in the top right corner is easy to hit.
+3. **Listen at the first Play:** there should be no click. The 25 ms cushion covers the late block.
+4. **Decide on the iPad's late block.** One option is a faster JIT compiler (a project of its own; I can start it). The other is accepting one late block at the first Play, which the cushion keeps inaudible.
+5. **Still by hand:** Bluetooth MIDI pairing, importing through the Files picker, and long-press.
 
 ### 2026-11-27 (afternoon): Phase C on the iPhone; 60 s JIT runs on both devices; larger panel; landscape only
 
