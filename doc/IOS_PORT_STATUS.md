@@ -683,7 +683,7 @@ Your screenshots, untethered, JIT through StikDebug. Full MM `trigPressFirmwareT
 - **JUCE standalone menu:** Audio/MIDI Settings… (output device, sample rate, buffer size, MIDI inputs), Save current state…, Load a saved state…, Reset to default state.
 - **New for iOS:** engine badge and reason, Relaunch with JIT, interpreter warning, ROM import from Files with validation, a test tone, Bluetooth MIDI pairing.
 
-### 2026-11-28 (morning): MM asks StikDebug again when its Enable JIT list started it without a script (built and reviewed; iPhone check pending)
+### 2026-11-28 (morning): MM asks StikDebug again when its Enable JIT list started it without a script; verified on the iPhone
 
 **What it does:** Gearmulator MM may be launched from StikDebug's Enable JIT list with no script assigned (the 2026-11-27 late-evening entry): `debugged=1`, nothing answered the request, and the debugger has gone. Then MM opens `stikdebug://enable-jit?bundle-id=…&pid=…&script-name=universal.js` itself, once per run. That is the URL of Settings › Relaunch with JIT.
 - StikDebug asks the user to confirm (its `confirmExternalJITRequests` defaults to on).
@@ -720,20 +720,29 @@ Your screenshots, untethered, JIT through StikDebug. Full MM `trigPressFirmwareT
     - runningboardd reporting debugserver's exit.
 
   This confirms on the device that the new attach trigger works and that the switch finishes. The 2026-11-27 19:24:56 run logged `processor found` but no `device recreated` line before StikDebug's 19:25:02 list launch replaced the process. universal.js was still assigned, so this run did not exercise the new path.
-- **Not yet verified on the device:**
-  - **The list path itself:** it needs the user at the phone.
-  - **An emulated list launch:** start MM stopped, then LLDB attach and detach without answering. It was refused at 08:49 because the iPhone was locked ("Unable to launch … the device was not, or could not be, unlocked", `build/device-runs/iphone-autoreq-emul-084949/launch.json`).
+- **The list path on the iPhone, 10:53:** universal.js unassigned (StikDebug's `BundleScriptMap` read back `{}` afterwards). Tapped Gearmulator MM in StikDebug's Enable JIT list. Files: `build/device-runs/iphone-autoreq-list-080349/` (`engine-1053.log`, `realtime.log`, filtered syslog).
 
-**Next (needs the user at the iPhone):**
-1. In StikDebug › Enable JIT, touch and hold Gearmulator MM › Reset Script. universal.js is assigned on the iPhone (`BundleScriptMap`), which would skip the new path.
-2. Tap Gearmulator MM, then tap Allow when StikDebug opens.
+  | Time | Source | Event |
+  |---|---|---|
+  | 10:53:32 | syslog | `dtdebugproxyd` spawned debugserver 26118, which launched MM 26119 |
+  | 10:53:33 | syslog | debugserver exited: StikDebug's attach and detach without a script |
+  | 10:53:38 | engine.log | `launch: Interpreter … debugged=1 traced=0 reason=StikDebug did not service the prepare request` |
+  | 10:53:39 | engine.log | `auto-request: StikDebug launched this app without its script and detached; asking it again with universal.js` |
+  | 10:53:40 | engine.log | `auto-request: StikDebug opened` |
+  | 10:53:48 | syslog | after Allow, a second debugserver (26121) spawned |
+  | 10:53:51 | engine.log | `watcher: debugger attached (P_TRACED set)`, `region acquired … 16MiB`, `switch: device recreated on the JIT` |
+  | 10:53:51 | syslog | debugserver 26121 exited |
 
-Expected in `engine.log`, in order:
-1. `launch: Interpreter … debugged=1 traced=0`
-2. `auto-request: … opened`
-3. `watcher: debugger attached (P_TRACED set)`
-4. `region acquired`
-5. `switch: device recreated on the JIT`
+  - **Elapsed:** 19 s from the tap in StikDebug to the JIT, the Allow tap included.
+  - **realtime.log:** `engine changed: JIT (StikDebug, switched in Settings) use_jit=1`. The app was still running at 10:55.
+- **After Play** (meter t≈75–96, about 21 s, so not a 60 s run):
+  - min rtf **2.472**, steady window rtf about 2.52, `offload_rt=1`;
+  - **1 late block**: the Play press, 11.30 ms against the 10.71 ms budget (cpu 6.68 ms, 87,872 B of JIT code emitted);
+  - **0 silent callbacks**, with this device's saved cushion of 25 ms.
+  - **Before Play:** all 154 silent callbacks and 64 late blocks happened before Play. 57 were the interpreter's few seconds; the switch block itself was 1,215 ms with audio stopped on purpose; then 5 blocks of 25–29 ms right after the device was recreated, and one of 16.4 ms.
+  - **Earlier Play block:** the 2026-11-27 night run's Play block on the iPhone was 7.19 ms, launched by LLDB without a switch. One sample here is not enough to call that a regression; worth a 60 s run after an in-process switch.
+
+**Doc:** `doc/JIT_SETUP.md` step 3 describes the round trip. Assigning universal.js once still saves it (and the 5 s of unanswered retries at launch).
 
 ### 2026-11-28: the panel works like the hardware with fingers; weighty knob curve; FUNCTION labels only with a pointer
 

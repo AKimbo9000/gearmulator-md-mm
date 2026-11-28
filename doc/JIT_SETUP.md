@@ -43,7 +43,7 @@ The pairing file stops working if the device's passcode is changed or reset [PAI
 1. Turn on **LocalDevVPN**. Wi-Fi must be on; on cellular only, connect the VPN and then turn on Airplane Mode [S1].
 2. Open the app (JIT Probe now, the Monomachine app later).
 3. Enable JIT for it, either way:
-   - In StikDebug: **Enable JIT** → choose the app. This needs `universal.js` assigned to the app once per device (below). Without the assignment, Gearmulator MM (builds from 2026-11-28) notices that StikDebug started it without the script. It then opens StikDebug once more with `universal.js` itself; tap **Allow** there, and StikDebug returns to MM on the JIT. The assignment saves that round trip. (Device check pending, IOS_PORT_STATUS 2026-11-28 morning.) Or:
+   - In StikDebug: **Enable JIT** → choose the app. This needs `universal.js` assigned to the app once per device (below). Without the assignment, Gearmulator MM (builds from 2026-11-28) notices that StikDebug started it without the script. It then opens StikDebug once more with `universal.js` itself; tap **Allow** there, and StikDebug returns to MM on the JIT. The assignment saves that round trip. (Verified on the iPhone on 2026-11-28: 19 s from the tap to the JIT, IOS_PORT_STATUS.) Or:
    - In the app: tap **Ask StikDebug to enable JIT**. This opens `stikdebug://enable-jit?bundle-id=…&pid=…&script-name=universal.js`, the form given in StikDebug's integration guide [S1]; the README does not document it. It names the script itself, so it needs no assignment.
 
    **Assigning the script (once per device, for each app):**
