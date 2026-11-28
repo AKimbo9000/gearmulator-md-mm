@@ -1,6 +1,6 @@
-# Streams a USB-connected iOS device's syslog (lockdown service com.apple.syslog_relay) through the Mac's usbmuxd,
-# using the Mac's existing pairing record for the device. Needs no root and no third-party packages; `log collect
-# --device-udid` needs root, and devicectl has no log command.
+# Streams a connected iOS device's syslog (lockdown service com.apple.syslog_relay) through the Mac's usbmuxd, over
+# USB or else usbmuxd's network connection, using the Mac's existing pairing record for the device. Needs no root and
+# no third-party packages; `log collect --device-udid` needs root, and devicectl has no log command.
 # Use: python3 -I tools/jitprobe/devsyslog.py <udid> <raw-out> <filtered-out> <regex>
 # Every line goes to raw-out and the lines matching regex (case-insensitive) to filtered-out, until interrupted.
 # raw-out holds every process's log, other apps included: keep it under build/ (gitignored) and delete it after use.
@@ -54,12 +54,17 @@ def mux_request(msg):
     return reply
 
 
+# USB when the device is on the cable, else usbmuxd's network connection (Wi-Fi sync), which carries lockdown too
 def device_id(udid):
+    found = {}
     for d in mux_request({"MessageType": "ListDevices"})["DeviceList"]:
         props = d["Properties"]
-        if props.get("SerialNumber") == udid and props.get("ConnectionType") == "USB":
-            return d["DeviceID"]
-    raise SystemExit("device %s not on USB" % udid)
+        if props.get("SerialNumber") == udid:
+            found[props.get("ConnectionType")] = d["DeviceID"]
+    for connection in ("USB", "Network"):
+        if connection in found:
+            return found[connection], connection
+    raise SystemExit("device %s not connected (USB or network)" % udid)
 
 
 def mux_tunnel(dev, port):
@@ -120,7 +125,7 @@ def start_service(udid, dev, record, ctx, name):
 def main():
     udid, raw_path, filtered_path, pattern = sys.argv[1:5]
     match = re.compile(pattern, re.IGNORECASE)
-    dev = device_id(udid)
+    dev, connection = device_id(udid)
     record = plistlib.loads(mux_request({"MessageType": "ReadPairRecord", "PairRecordID": udid})["PairRecordData"])
     with tempfile.TemporaryDirectory() as tmp:
         ctx = tls_context(record, tmp)
@@ -131,8 +136,8 @@ def main():
     raw = open(raw_path, "a", buffering=1)
     filtered = open(filtered_path, "a", buffering=1)
     stamp = time.strftime("%H:%M:%S")
-    print("[devsyslog] %s streaming %s (service port %d, ssl %s)" % (stamp, udid, service["Port"],
-                                                                     service.get("EnableServiceSSL", False)),
+    print("[devsyslog] %s streaming %s over %s (service port %d, ssl %s)" % (stamp, udid, connection, service["Port"],
+                                                                             service.get("EnableServiceSSL", False)),
           file=filtered, flush=True)
     pending = b""
     while True:
