@@ -799,7 +799,13 @@ The Simulator lists the Mac's mouse as a GCMouse (`pointer: connected (GCMouse c
 - **Pointer detection (`engine.log`):**
   - iPhone: `pointer: not connected at start (GCMouse 0)`, so the labels are off.
   - iPad: `not connected at start`, then 0.1 s later `connected (GCMouse connected, GCMouse 1, hover 0)`, so the labels are on. GCMouse does list this iPad's pointing device.
-- **Still to do:** the feel and two-finger tests by hand.
+- **Your test on the iPhone:** you reported that FUNCTION + key and the knob feel both work well. The log (`iphone-console.txt`) confirms it:
+  - 12 two-finger chords with FUNCTION held: RECORD (COPY) ×3, PLAY (CLEAR) ×1, STOP (PASTE) ×4, TRIG SELECT (MIDI SEQ) ×4. Each key was released by its own finger.
+  - 7 knob gestures: one press never left the dead zone (0 detents); the largest turn was 120 detents in one drag.
+  - At most 4 detents in one event; finger speed 8–348 pt/s; gain 0.25–0.69.
+  - The iPad log is empty: the test was done on the iPhone.
+  - TRIG held while turning a knob (parameter lock) is not in the log, so on the device it was not exercised.
+- **JIT:** an app started by `devicectl` runs on the interpreter, because StikDebug is not involved. You restarted it with the JIT.
 
 **Known limit:** JUCE 7 sends Apple Pencil and trackpad hover as moves of finger 0. A hover while finger 0 turns a knob could move it; jumps over 80 pt are ignored.
 
