@@ -793,10 +793,13 @@ Your screenshots, untethered, JIT through StikDebug. Full MM `trigPressFirmwareT
 
 The Simulator lists the Mac's mouse as a GCMouse (`pointer: connected (GCMouse connected …)`), so there the labels are on unless forced off.
 
-**Not yet on a device.** The StikDebug session is using `build/ios-mm` and the iPhone. Still to check:
-- The feel on both devices.
-- That the iPhone reports no pointer.
-- That the iPad reports the Magic Keyboard trackpad.
+**On the devices (2026-11-28 11:00):**
+- **Before the run:** `scripts/verify-interp.sh` gave the same result as on 2026-11-26 at 22:52. The JIT renders are unchanged (MD bdb35c9d2cdc6bb9, MM 6adf0ea75100b8c3, both PASS). The interpreter mismatch and the 3 interpreter firmware-test failures are the open Phase 1 items, with the same MM interpreter hash 0863f46b643b5555.
+- **Build:** `build/ios-mm` (ThinLTO, PGO use) at 10:59 with these changes. Installed on both devices and started with `devicectl … --console` and `GEARMULATOR_IOS_TOUCH_LOG=1`. The output goes to `build/touch-device/{iphone,ipad}-console.txt`.
+- **Pointer detection (`engine.log`):**
+  - iPhone: `pointer: not connected at start (GCMouse 0)`, so the labels are off.
+  - iPad: `not connected at start`, then 0.1 s later `connected (GCMouse connected, GCMouse 1, hover 0)`, so the labels are on. GCMouse does list this iPad's pointing device.
+- **Still to do:** the feel and two-finger tests by hand.
 
 **Known limit:** JUCE 7 sends Apple Pencil and trackpad hover as moves of finger 0. A hover while finger 0 turns a knob could move it; jumps over 80 pt are ignored.
 
