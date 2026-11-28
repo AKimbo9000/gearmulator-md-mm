@@ -744,6 +744,13 @@ Your screenshots, untethered, JIT through StikDebug. Full MM `trigPressFirmwareT
 
 **Doc:** `doc/JIT_SETUP.md` step 3 describes the round trip. Assigning universal.js once still saves it (and the 5 s of unanswered retries at launch).
 
+### 2026-11-28: local app icon option
+
+- **`<target>_ICON`** (for example `-DmmJucePlugin_ICON=/path/to/icon.png`) gives the iOS app an icon. JUCE derives every size from that one image.
+  - The repository ships no icon. The path is set only in a local build tree, so neither the image nor its path is committed.
+  - Set in `build/ios-mm` for the MM app. Installed on both devices.
+- **CMake install rule:** iOS no longer runs `install(TARGETS …_Standalone)`. With an icon, JUCE adds an asset-catalog folder as a resource, which that rule rejects. An iOS app is never packaged that way.
+
 ### 2026-11-28: the panel works like the hardware with fingers; weighty knob curve; FUNCTION labels only with a pointer
 
 **User request:** knobs that feel smoother and weightier, like professional iOS plugins. A panel that works like the real machine with multi-touch: hold FUNCTION with one finger and press another key with a second finger. No touchable FUNCTION labels, except on an iPad with a mouse or trackpad.

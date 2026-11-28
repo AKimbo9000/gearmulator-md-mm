@@ -208,10 +208,15 @@ macro(createJucePlugin targetName productName isSynth plugin4CC binaryDataProjec
 	else()
 		set(tusBundleId "local.gearmulator.preview.${productNameIdentifier}")
 	endif()
+	# <targetName>_ICON: an image file for the app icon (ICON_BIG; JUCE derives every size from it). The repository
+	# ships no icon: set it in a local build tree only, e.g. -DmmJucePlugin_ICON=/path/to/icon.png
+	set(tusIconArgs "")
+	if(DEFINED ${targetName}_ICON AND NOT "${${targetName}_ICON}" STREQUAL "")
+		set(tusIconArgs ICON_BIG "${${targetName}_ICON}")
+	endif()
 	juce_add_plugin(${targetName}
 		# VERSION ...                                     # Set this if the plugin version is different to the project version
-		# ICON_BIG ...                                    # ICON_* arguments specify a path to an image file to use as an icon for the Standalone
-		# ICON_SMALL ...
+		${tusIconArgs}                                    # ICON_* arguments specify a path to an image file to use as an icon for the Standalone
 		COMPANY_NAME "Gearmulator Preview"                 # Specify the name of the plugin's author
 		COMPANY_WEBSITE "https://dsp56300.wordpress.com"
 		IS_SYNTH ${isSynth}                               # Is this a synth or an effect?
@@ -436,8 +441,11 @@ macro(createJucePlugin targetName productName isSynth plugin4CC binaryDataProjec
 		add_dependencies(PluginFormat_Standalone ${targetName}_Standalone)
 
 		# Without this the Standalone package held nothing but the changelog every format gets, so the
-		# program was never shipped at all.
-		install(TARGETS ${targetName}_Standalone DESTINATION . COMPONENT ${productName}-Standalone)
+		# program was never shipped at all. Not on iOS: an app goes to a device with Xcode or devicectl, and with an
+		# icon (<targetName>_ICON) JUCE adds an asset catalog folder as a resource, which install(TARGETS) rejects.
+		if(NOT IOS)
+			install(TARGETS ${targetName}_Standalone DESTINATION . COMPONENT ${productName}-Standalone)
+		endif()
 		if(APPLE)
 			installMacSetupScript(. ${productName}-Standalone)
 		endif()
