@@ -710,6 +710,16 @@ Your screenshots, untethered, JIT through StikDebug. Full MM `trigPressFirmwareT
 **Measured so far:**
 - **Device build** (`build/ios-mm`, ThinLTO, OPTIMIZE_DSP, PGO use): succeeds.
 - **`P_TRACED` on the iPhone with LLDB attached** (`build/device-runs/iphone-autoreq-lldb-194825/engine.log`): `launch: JIT (StikDebug) use_jit=1 debugged=1 traced=1 … serviced after 1 attempt(s)`. That was the first version of the change; the flag read is the same now.
+- **StikDebug attaching to a running MM on the iPhone, with the committed build installed at 08:03** (`build/device-runs/iphone-autoreq-list-080349/engine-0907.log`, filtered syslog in the same folder):
+  - **09:07:29:** MM started normally, `launch: … debugged=0 traced=0`.
+  - **09:07:52:** StikDebug's debugserver was spawned.
+  - **09:07:54:** in the same second the log shows:
+    - `watcher: debugger attached (P_TRACED set)`;
+    - `region acquired … 16MiB`;
+    - `switch: device recreated on the JIT`;
+    - runningboardd reporting debugserver's exit.
+
+  This confirms on the device that the new attach trigger works and that the switch finishes. The 2026-11-27 19:24:56 run logged `processor found` but no `device recreated` line before StikDebug's 19:25:02 list launch replaced the process. universal.js was still assigned, so this run did not exercise the new path.
 - **Not yet verified on the device:**
   - **The list path itself:** it needs the user at the phone.
   - **An emulated list launch:** start MM stopped, then LLDB attach and detach without answering. It was refused at 08:49 because the iPhone was locked ("Unable to launch … the device was not, or could not be, unlocked", `build/device-runs/iphone-autoreq-emul-084949/launch.json`).
